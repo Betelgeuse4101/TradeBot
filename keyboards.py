@@ -8,11 +8,32 @@ from config import Config
 
 
 class Keyboards:
-    """Класс для создания клавиатур"""
+    """
+    Класс-фабрика для создания клавиатур бота.
+
+    Предоставляет статические методы для генерации различных типов клавиатур:
+    - Reply-клавиатуры (главное меню)
+    - Inline-клавиатуры (выбор криптовалют, действия, настройки)
+
+    Все методы возвращают готовые объекты клавиатур для использования в ответах.
+    """
 
     @staticmethod
     def get_main_menu():
-        """Главное меню"""
+        """
+        Создает главное меню с reply-кнопками.
+
+        Возвращает клавиатуру с основными разделами:
+        - Котировки
+        - Популярные
+        - Мои уведомления
+        - Статистика
+        - Настройки
+        - Помощь
+
+        Returns:
+            ReplyKeyboardMarkup: Клавиатура главного меню с автоматическим изменением размера
+        """
         keyboard = ReplyKeyboardMarkup(
             keyboard=[
                 [
@@ -35,7 +56,18 @@ class Keyboards:
 
     @staticmethod
     def get_crypto_selection():
-        """Выбор криптовалюты"""
+        """
+        Создает inline-клавиатуру для выбора криптовалюты.
+
+        Формирует кнопки на основе POPULAR_CRYPTO из конфига,
+        располагая их по 3 в ряд. Добавляет кнопки управления:
+        - Все котировки
+        - Новое уведомление
+        - Главное меню
+
+        Returns:
+            InlineKeyboardMarkup: Клавиатура с кнопками криптовалют и управления
+        """
         buttons = []
         row = []
 
@@ -66,7 +98,20 @@ class Keyboards:
 
     @staticmethod
     def get_price_actions(symbol: str):
-        """Действия с выбранной криптой"""
+        """
+        Создает клавиатуру действий для выбранной криптовалюты.
+
+        Args:
+            symbol (str): Торговый символ (например, "BTCUSDT")
+
+        Returns:
+            InlineKeyboardMarkup: Клавиатура с кнопками:
+                - Подробная информация
+                - Установка уведомления
+                - График
+                - Добавление в избранное
+                - Назад к списку
+        """
         return InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="📊 Подробно", callback_data=f"detail_{symbol}"),
@@ -83,8 +128,19 @@ class Keyboards:
 
     @staticmethod
     def get_alert_setup(symbol: str):
-        """Настройка уведомления"""
-        # Получаем текущую цену для предложений
+        """
+        Создает клавиатуру для настройки уведомления по криптовалюте.
+
+        Args:
+            symbol (str): Торговый символ (например, "BTCUSDT")
+
+        Returns:
+            InlineKeyboardMarkup: Клавиатура с вариантами уведомлений:
+                - Процентные уведомления (5%, 10% вверх/вниз)
+                - Своя цена
+                - Помощь по уведомлениям
+                - Назад к действиям с криптовалютой
+        """
         return InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="📈 Выше на 5%", callback_data=f"alert_up_percent_{symbol}_5"),
@@ -105,7 +161,17 @@ class Keyboards:
 
     @staticmethod
     def get_alerts_menu():
-        """Меню уведомлений"""
+        """
+        Создает меню управления уведомлениями.
+
+        Returns:
+            InlineKeyboardMarkup: Клавиатура с действиями над уведомлениями:
+                - Новое уведомление
+                - Очистить все
+                - Список уведомлений
+                - Настройки уведомлений
+                - Главное меню
+        """
         return InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="➕ Новое уведомление", callback_data="new_alert"),
@@ -122,7 +188,19 @@ class Keyboards:
 
     @staticmethod
     def get_alert_management(alert_id: int, symbol: str):
-        """Управление конкретным уведомлением"""
+        """
+        Создает клавиатуру для управления конкретным уведомлением.
+
+        Args:
+            alert_id (int): Идентификатор уведомления
+            symbol (str): Торговый символ
+
+        Returns:
+            InlineKeyboardMarkup: Клавиатура с кнопками:
+                - Изменить уведомление
+                - Удалить уведомление
+                - Назад к списку уведомлений
+        """
         return InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="✏️ Изменить", callback_data=f"edit_alert_{alert_id}"),
@@ -135,7 +213,17 @@ class Keyboards:
 
     @staticmethod
     def get_settings_menu():
-        """Меню настроек"""
+        """
+        Создает меню настроек бота.
+
+        Returns:
+            InlineKeyboardMarkup: Клавиатура с разделами настроек:
+                - Интервал уведомлений
+                - Тема оформления
+                - Настройки уведомлений
+                - Экспорт данных
+                - Главное меню
+        """
         return InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="⏰ Интервал уведомлений", callback_data="interval_setting"),
@@ -152,14 +240,32 @@ class Keyboards:
 
     @staticmethod
     def get_back_button(callback_data: str = "back_to_main"):
-        """Кнопка Назад"""
+        """
+        Создает простую клавиатуру с одной кнопкой "Назад".
+
+        Args:
+            callback_data (str): Данные для callback при нажатии кнопки.
+                                 По умолчанию "back_to_main"
+
+        Returns:
+            InlineKeyboardMarkup: Клавиатура с одной кнопкой возврата
+        """
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="↩️ Назад", callback_data=callback_data)]
         ])
 
     @staticmethod
     def get_yes_no_keyboard(yes_callback: str, no_callback: str):
-        """Клавиатура Да/Нет"""
+        """
+        Создает клавиатуру для подтверждения действия (Да/Нет).
+
+        Args:
+            yes_callback (str): Callback data для кнопки "Да"
+            no_callback (str): Callback data для кнопки "Нет"
+
+        Returns:
+            InlineKeyboardMarkup: Клавиатура с двумя кнопками подтверждения
+        """
         return InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="✅ Да", callback_data=yes_callback),
@@ -169,7 +275,16 @@ class Keyboards:
 
     @staticmethod
     def get_cancel_keyboard(callback_data: str = "cancel_alert"):
-        """Кнопка Отмена"""
+        """
+        Создает клавиатуру для отмены текущего действия.
+
+        Args:
+            callback_data (str): Данные для callback при нажатии кнопки отмены.
+                                 По умолчанию "cancel_alert"
+
+        Returns:
+            InlineKeyboardMarkup: Клавиатура с одной кнопкой отмены
+        """
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="❌ Отмена", callback_data=callback_data)]
         ])
