@@ -1,3 +1,4 @@
+# handlers.py
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
@@ -10,6 +11,7 @@ from aiogram.exceptions import TelegramBadRequest
 from config import Config
 from bybit_client import BybitClient
 from keyboards import Keyboards
+from alerts_storage import AlertsStorage
 
 
 class AlertState(StatesGroup):
@@ -28,16 +30,29 @@ class AlertState(StatesGroup):
 # Создаем роутер для регистрации обработчиков
 router = Router()
 
+# Инициализация хранилища уведомлений
+alerts_storage = AlertsStorage("alerts.json")
+
 # Глобальные переменные
-user_alerts = {}  # user_id -> список алертов
 bot = None  # Будет установлено при регистрации
 
-# Инициализация клиента
+# Инициализация клиента Bybit
 bybit_client = BybitClient()
+
 
 # Вспомогательная функция для безопасного редактирования сообщений
 async def safe_edit_message(message, text, reply_markup=None):
+    """
+    Безопасно редактирует сообщение, игнорируя ошибку "message is not modified".
 
+    Args:
+        message: Объект сообщения для редактирования
+        text: Новый текст сообщения
+        reply_markup: Новая клавиатура (опционально)
+
+    Returns:
+        bool: True если сообщение было изменено, False если нет
+    """
     try:
         await message.edit_text(text, reply_markup=reply_markup)
         return True
@@ -64,9 +79,6 @@ async def cmd_start(message: Message):
 
     Args:
         message (Message): Объект сообщения от пользователя
-
-    Returns:
-        None
     """
     welcome_text = """
 🤖 <b>Крипто-трейдинг бот с Bybit</b>
@@ -95,9 +107,6 @@ async def show_quotes(message: Message):
 
     Args:
         message (Message): Объект сообщения от пользователя
-
-    Returns:
-        None
     """
     await message.answer(
         "📊 <b>Выберите криптовалюту:</b>\n"
@@ -116,9 +125,6 @@ async def show_popular(message: Message):
 
     Args:
         message (Message): Объект сообщения от пользователя
-
-    Returns:
-        None
     """
     await message.answer("⏳ Получаю актуальные цены...")
 
@@ -157,12 +163,9 @@ async def show_my_alerts(message: Message):
 
     Args:
         message (Message): Объект сообщения от пользователя
-
-    Returns:
-        None
     """
     user_id = message.from_user.id
-    alerts = user_alerts.get(user_id, [])
+    alerts = alerts_storage.get_user_alerts(user_id)
 
     if not alerts:
         response = "📭 <b>У вас нет активных уведомлений</b>\n\n"
@@ -213,9 +216,6 @@ async def show_stats_menu(message: Message):
 
     Args:
         message (Message): Объект сообщения от пользователя
-
-    Returns:
-        None
     """
     await message.answer(
         "📈 <b>Выберите криптовалюту для подробной статистики:</b>",
@@ -232,12 +232,9 @@ async def show_settings(message: Message):
 
     Args:
         message (Message): Объект сообщения от пользователя
-
-    Returns:
-        None
     """
     user_id = message.from_user.id
-    alert_count = len(user_alerts.get(user_id, []))
+    alert_count = len(alerts_storage.get_user_alerts(user_id))
 
     settings_text = f"""
 ⚙️ <b>Настройки бота</b>
@@ -268,9 +265,6 @@ async def show_help(message: Message):
 
     Args:
         message (Message): Объект сообщения от пользователя
-
-    Returns:
-        None
     """
     help_text = """
 📚 <b>Помощь по боту</b>
@@ -303,6 +297,7 @@ async def show_help(message: Message):
         reply_markup=Keyboards.get_back_button("back_to_main")
     )
 
+
 @router.message(Command("price"))
 async def cmd_price(message: Message):
     """
@@ -312,9 +307,6 @@ async def cmd_price(message: Message):
 
     Args:
         message (Message): Объект сообщения от пользователя
-
-    Returns:
-        None
     """
     args = message.text.split()
     if len(args) < 2:
@@ -332,9 +324,6 @@ async def cmd_alerts(message: Message):
 
     Args:
         message (Message): Объект сообщения от пользователя
-
-    Returns:
-        None
     """
     await show_my_alerts(message)
 
@@ -349,9 +338,6 @@ async def cmd_cancel(message: Message, state: FSMContext):
     Args:
         message (Message): Объект сообщения от пользователя
         state (FSMContext): Контекст состояния FSM
-
-    Returns:
-        None
     """
     await state.clear()
     await message.answer(
@@ -371,9 +357,6 @@ async def handle_crypto_selection(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()  # Отвечаем на callback, чтобы убрать "часики"
 
@@ -399,9 +382,6 @@ async def handle_all_prices(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -449,9 +429,6 @@ async def handle_detail(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -503,9 +480,6 @@ async def handle_chart(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -535,9 +509,6 @@ async def handle_favorite(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     symbol = callback.data.replace("fav_", "")
 
@@ -558,9 +529,6 @@ async def handle_alert_up_percent(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -614,9 +582,6 @@ async def handle_alert_down_percent(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -673,9 +638,6 @@ async def handle_alert_custom(callback: CallbackQuery, state: FSMContext):
     Args:
         callback (CallbackQuery): Объект callback запроса
         state (FSMContext): Контекст состояния FSM
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -719,9 +681,6 @@ async def handle_cancel_custom(callback: CallbackQuery, state: FSMContext):
     Args:
         callback (CallbackQuery): Объект callback запроса
         state (FSMContext): Контекст состояния FSM
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -744,9 +703,6 @@ async def handle_new_alert(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -765,9 +721,6 @@ async def handle_new_alert_from_select(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -786,14 +739,11 @@ async def handle_list_alerts(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
     user_id = callback.from_user.id
-    alerts = user_alerts.get(user_id, [])
+    alerts = alerts_storage.get_user_alerts(user_id)
 
     if not alerts:
         await safe_edit_message(
@@ -838,9 +788,6 @@ async def handle_delete_alert(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -848,37 +795,25 @@ async def handle_delete_alert(callback: CallbackQuery):
         alert_id = int(callback.data.replace("delete_alert_", ""))
         user_id = callback.from_user.id
 
-        if user_id in user_alerts:
-            # Ищем уведомление с таким ID
-            alert_to_delete = None
-            for alert in user_alerts[user_id]:
-                if alert['id'] == alert_id:
-                    alert_to_delete = alert
-                    break
+        alert = alerts_storage.get_alert(user_id, alert_id)
 
-            if alert_to_delete:
-                # Находим короткое имя
-                short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == alert_to_delete['symbol']]
-                display_name = short_name[0] if short_name else alert_to_delete['symbol']
+        if alert:
+            # Находим короткое имя
+            short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == alert['symbol']]
+            display_name = short_name[0] if short_name else alert['symbol']
 
-                # Удаляем уведомление
-                user_alerts[user_id].remove(alert_to_delete)
-
-                # Если уведомлений не осталось, удаляем пользователя
-                if not user_alerts[user_id]:
-                    del user_alerts[user_id]
-
+            if alerts_storage.remove_alert(user_id, alert_id):
                 await safe_edit_message(
                     callback.message,
                     f"🗑️ <b>Уведомление #{alert_id} удалено</b>\n\n"
                     f"Криптовалюта: {display_name}\n"
-                    f"Цель: ${alert_to_delete['target_price']:,.2f}",
+                    f"Цель: ${alert['target_price']:,.2f}",
                     Keyboards.get_back_button("back_to_alerts_list")
                 )
             else:
-                await callback.answer("❌ Уведомление не найдено")
+                await callback.answer("❌ Не удалось удалить уведомление")
         else:
-            await callback.answer("❌ У вас нет уведомлений")
+            await callback.answer("❌ Уведомление не найдено")
 
     except ValueError:
         await callback.answer("❌ Неверный ID уведомления")
@@ -891,17 +826,13 @@ async def handle_clear_alerts(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
     user_id = callback.from_user.id
 
-    if user_id in user_alerts:
-        alert_count = len(user_alerts[user_id])
-        del user_alerts[user_id]
+    if alerts_storage.has_user_alerts(user_id):
+        alert_count = alerts_storage.remove_all_user_alerts(user_id)
 
         await safe_edit_message(
             callback.message,
@@ -920,9 +851,6 @@ async def handle_back_to_alerts_list(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
     await handle_list_alerts(callback)
@@ -935,9 +863,6 @@ async def handle_alert_help(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -976,9 +901,6 @@ async def handle_alert_setup(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -1043,9 +965,6 @@ async def handle_back_button(callback: CallbackQuery, state: FSMContext):
     Args:
         callback (CallbackQuery): Объект callback запроса
         state (FSMContext): Контекст состояния FSM
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -1092,9 +1011,6 @@ async def handle_interval_setting(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -1114,9 +1030,6 @@ async def handle_theme_setting(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -1139,9 +1052,6 @@ async def handle_notify_setting(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -1164,9 +1074,6 @@ async def handle_export_data(callback: CallbackQuery):
 
     Args:
         callback (CallbackQuery): Объект callback запроса
-
-    Returns:
-        None
     """
     await callback.answer()
 
@@ -1195,9 +1102,6 @@ async def process_custom_price(message: Message, state: FSMContext):
     Args:
         message (Message): Объект сообщения от пользователя
         state (FSMContext): Контекст состояния FSM
-
-    Returns:
-        None
     """
     try:
         target_price = float(message.text.replace(",", "."))
@@ -1262,7 +1166,7 @@ async def process_custom_price(message: Message, state: FSMContext):
 
 async def save_alert(user_id: int, symbol: str, target_price: float, current_price: float, direction: str) -> int:
     """
-    Сохраняет новое уведомление в глобальное хранилище.
+    Сохраняет новое уведомление в хранилище.
 
     Генерирует уникальный ID для уведомления и добавляет его
     в список уведомлений пользователя.
@@ -1277,17 +1181,7 @@ async def save_alert(user_id: int, symbol: str, target_price: float, current_pri
     Returns:
         int: ID созданного уведомления
     """
-    if user_id not in user_alerts:
-        user_alerts[user_id] = []
-
-    # Генерируем ID (максимальный существующий + 1)
-    if user_alerts[user_id]:
-        alert_id = max(alert['id'] for alert in user_alerts[user_id]) + 1
-    else:
-        alert_id = 1
-
     alert = {
-        'id': alert_id,
         'symbol': symbol,
         'target_price': target_price,
         'current_price': current_price,
@@ -1296,7 +1190,7 @@ async def save_alert(user_id: int, symbol: str, target_price: float, current_pri
         'created_at': datetime.now().isoformat()
     }
 
-    user_alerts[user_id].append(alert)
+    alert_id = alerts_storage.add_alert(user_id, alert)
     print(f"✅ Уведомление #{alert_id} сохранено для пользователя {user_id}: {symbol} {direction} до {target_price}")
     return alert_id
 
@@ -1308,9 +1202,6 @@ async def show_crypto_price(message, symbol: str):
     Args:
         message (Message): Объект сообщения от пользователя
         symbol (str): Торговый символ (например, "BTCUSDT")
-
-    Returns:
-        None
     """
     ticker = await bybit_client.get_ticker(symbol)
 
@@ -1328,9 +1219,6 @@ async def show_crypto_price_callback(callback: CallbackQuery, symbol: str):
     Args:
         callback (CallbackQuery): Объект callback запроса
         symbol (str): Торговый символ (например, "BTCUSDT")
-
-    Returns:
-        None
     """
     ticker = await bybit_client.get_ticker(symbol)
 
@@ -1353,9 +1241,6 @@ async def format_and_send_price(message_obj, symbol: str, ticker: dict, is_callb
         symbol (str): Торговый символ (например, "BTCUSDT")
         ticker (dict): Данные тикера от Bybit API
         is_callback (bool): Флаг, указывающий, что это ответ на callback
-
-    Returns:
-        None
     """
     price = float(ticker['lastPrice'])
     change = float(ticker['price24hPcnt']) * 100
@@ -1406,16 +1291,15 @@ async def check_alerts_task():
     и удаляет выполненное уведомление.
 
     Интервал проверки задается в Config.ALERT_INTERVAL.
-
-    Returns:
-        None
     """
     while True:
         try:
-            print(f"🔍 Проверка уведомлений... Активных пользователей: {len(user_alerts)}")
+            print(f"🔍 Проверка уведомлений... Активных пользователей: {len(alerts_storage.get_all_users())}")
 
-            for user_id, alerts in list(user_alerts.items()):
-                alerts_to_remove = []
+            completed_alerts = []  # Список для сбора выполненных уведомлений
+
+            for user_id in alerts_storage.get_all_users():
+                alerts = alerts_storage.get_user_alerts(user_id)
 
                 for alert in alerts:
                     symbol = alert['symbol']
@@ -1454,22 +1338,16 @@ async def check_alerts_task():
                                     f"<i>Уведомление выполнено ✅</i>"
                                 )
 
-                                # Помечаем для удаления
-                                alerts_to_remove.append(alert)
+                                # Добавляем в список на удаление
+                                completed_alerts.append((user_id, alert['id']))
 
                             except Exception as e:
                                 print(f"❌ Ошибка отправки уведомления пользователю {user_id}: {e}")
 
-                # Удаляем выполненные уведомления
-                for alert in alerts_to_remove:
-                    if alert in alerts:
-                        alerts.remove(alert)
-                        print(f"🗑️ Уведомление #{alert['id']} удалено")
-
-                # Если уведомлений не осталось, удаляем пользователя
-                if not alerts:
-                    del user_alerts[user_id]
-                    print(f"👤 Пользователь {user_id} удален из хранилища (нет уведомлений)")
+            # Удаляем выполненные уведомления
+            if completed_alerts:
+                alerts_storage.cleanup_completed_alerts(completed_alerts)
+                print(f"🗑️ Удалено {len(completed_alerts)} выполненных уведомлений")
 
             # Ждем перед следующей проверкой
             await asyncio.sleep(Config.ALERT_INTERVAL)
@@ -1488,9 +1366,6 @@ def register_handlers(dp, bot_instance):
     Args:
         dp (Dispatcher): Диспетчер Aiogram
         bot_instance (Bot): Экземпляр бота
-
-    Returns:
-        None
     """
     dp.include_router(router)
 
