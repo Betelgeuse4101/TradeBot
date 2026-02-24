@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -7,13 +6,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import Config
 from handlers import register_handlers
+from logger import get_logger, setup_module_loggers, log_rotation_info
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Получаем логгер для main
+logger = get_logger('main')
 
 
 class CryptoBot:
@@ -62,12 +58,16 @@ class CryptoBot:
         Returns:
             None
         """
-        logger.info("🚀 Запуск крипто-бота с кнопочным интерфейсом...")
+        logger.info("=" * 60)
+        logger.info("🚀 ЗАПУСК КРИПТО-БОТА С КНОПОЧНЫМ ИНТЕРФЕЙСОМ")
+        logger.info("=" * 60)
 
         # Удаляем вебхук
         await self.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Вебхук удален")
 
         # Запускаем поллинг
+        logger.info("📡 Запуск поллинга...")
         await self.dp.start_polling(self.bot)
 
 
@@ -81,11 +81,24 @@ async def main():
     Returns:
         None
     """
+    # Настройка логгеров для всех модулей
+    setup_module_loggers()
+
+    # Дополнительная информация о запуске
+    log_rotation_info()
+
     bot = CryptoBot()
     try:
         await bot.start()
     except KeyboardInterrupt:
         logger.info("🛑 Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"💥 Критическая ошибка: {e}", exc_info=True)
+    finally:
+        # Закрываем сессию Bybit клиента
+        from bybit_client import bybit_client
+        await bybit_client.close()
+        logger.info("👋 Бот завершил работу")
 
 
 if __name__ == "__main__":

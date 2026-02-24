@@ -1,4 +1,3 @@
-# handlers.py
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
@@ -9,20 +8,18 @@ from datetime import datetime
 from aiogram.exceptions import TelegramBadRequest
 
 from config import Config
-from bybit_client import BybitClient
+from bybit_client import bybit_client
 from keyboards import Keyboards
 from alerts_storage import AlertsStorage
+from logger import get_logger, log_function_call
+
+# Получаем логгер для handlers
+logger = get_logger('handlers')
 
 
 class AlertState(StatesGroup):
     """
-    Состояния FSM (Finite State Machine) для процесса создания уведомлений.
-
-    Используется для отслеживания этапов диалога с пользователем при
-    настройке пользовательских уведомлений о ценах.
-
-    States:
-        waiting_for_custom_price: Ожидание ввода пользовательской цены
+    Состояния FSM для процесса создания уведомлений.
     """
     waiting_for_custom_price = State()
 
@@ -36,50 +33,37 @@ alerts_storage = AlertsStorage("alerts.json")
 # Глобальные переменные
 bot = None  # Будет установлено при регистрации
 
-# Инициализация клиента Bybit
-bybit_client = BybitClient()
-
 
 # Вспомогательная функция для безопасного редактирования сообщений
 async def safe_edit_message(message, text, reply_markup=None):
     """
     Безопасно редактирует сообщение, игнорируя ошибку "message is not modified".
-
-    Args:
-        message: Объект сообщения для редактирования
-        text: Новый текст сообщения
-        reply_markup: Новая клавиатура (опционально)
-
-    Returns:
-        bool: True если сообщение было изменено, False если нет
     """
     try:
         await message.edit_text(text, reply_markup=reply_markup)
+        logger.debug("✏️ Сообщение отредактировано")
         return True
     except TelegramBadRequest as e:
         if "message is not modified" in str(e):
-            # Сообщение не изменилось - это не ошибка, просто игнорируем
-            print("Сообщение не изменилось, пропускаем")
+            logger.debug("📝 Сообщение не изменилось, пропускаем")
             return False
         else:
-            # Другая ошибка - пробрасываем дальше
-            print(f"Ошибка при редактировании сообщения: {e}")
+            logger.error(f"❌ Ошибка при редактировании сообщения: {e}")
             raise e
 
 
 # ===== ОСНОВНЫЕ ОБРАБОТЧИКИ СООБЩЕНИЙ =====
 
 @router.message(Command("start"))
+@log_function_call()
 async def cmd_start(message: Message):
     """
     Обработчик команды /start.
-
-    Отправляет приветственное сообщение с описанием функций бота
-    и показывает главное меню с reply-клавиатурой.
-
-    Args:
-        message (Message): Объект сообщения от пользователя
     """
+    user_id = message.from_user.id
+    username = message.from_user.username or "без username"
+    logger.info(f"👤 Новый пользователь: {user_id} (@{username})")
+
     welcome_text = """
 🤖 <b>Крипто-трейдинг бот с Bybit</b>
 
@@ -101,13 +85,14 @@ async def cmd_start(message: Message):
 
 
 @router.message(F.text == "💰 Котировки")
+@log_function_call()
 async def show_quotes(message: Message):
     """
     Показывает меню выбора криптовалют для просмотра котировок.
-
-    Args:
-        message (Message): Объект сообщения от пользователя
     """
+    user_id = message.from_user.id
+    logger.info(f"💰 Пользователь {user_id} открыл меню котировок")
+
     await message.answer(
         "📊 <b>Выберите криптовалюту:</b>\n"
         "Или используйте /price [символ] для любой пары",
@@ -116,22 +101,21 @@ async def show_quotes(message: Message):
 
 
 @router.message(F.text == "🚀 Популярные")
+@log_function_call()
 async def show_popular(message: Message):
     """
     Показывает текущие цены на популярные криптовалюты.
-
-    Получает данные для первых 6 популярных пар из конфига
-    и отображает их с изменением за 24 часа.
-
-    Args:
-        message (Message): Объект сообщения от пользователя
     """
+    user_id = message.from_user.id
+    logger.info(f"🚀 Пользователь {user_id} запросил популярные криптовалюты")
+
     await message.answer("⏳ Получаю актуальные цены...")
 
     symbols = list(Config.POPULAR_CRYPTO.values())[:6]
     tickers = await bybit_client.get_multiple_tickers(symbols)
 
     if not tickers:
+        logger.error(f"❌ Не удалось получить данные для пользователя {user_id}")
         await message.answer("❌ Не удалось получить данные")
         return
 
@@ -139,13 +123,15 @@ async def show_popular(message: Message):
 
     for symbol, ticker in tickers.items():
         price = float(ticker['lastPrice'])
+        # Форматируем цену
+        price_str = f"{int(price)}" if price.is_integer() else f"{price:.8f}".rstrip('0').rstrip('.')
+
         change = float(ticker['price24hPcnt']) * 100
         change_icon = "🟢" if change > 0 else "🔴"
 
-        # Находим короткое имя
         short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol][0]
 
-        response += f"<b>{short_name}</b> (${price:,.4f}) {change_icon} {change:+.4f}%\n"
+        response += f"<b>{short_name}</b> (${price_str}) {change_icon} {change:+.4f}%\n"
 
     await message.answer(
         response,
@@ -154,18 +140,15 @@ async def show_popular(message: Message):
 
 
 @router.message(F.text == "🔔 Мои уведомления")
+@log_function_call()
 async def show_my_alerts(message: Message):
     """
     Показывает информацию об уведомлениях пользователя.
-
-    Если у пользователя нет уведомлений - показывает соответствующее сообщение.
-    Если есть - показывает сводку по криптовалютам с количеством уведомлений.
-
-    Args:
-        message (Message): Объект сообщения от пользователя
     """
     user_id = message.from_user.id
     alerts = alerts_storage.get_user_alerts(user_id)
+
+    logger.info(f"🔔 Пользователь {user_id} запросил уведомления (всего: {len(alerts)})")
 
     if not alerts:
         response = "📭 <b>У вас нет активных уведомлений</b>\n\n"
@@ -176,7 +159,6 @@ async def show_my_alerts(message: Message):
             reply_markup=Keyboards.get_alerts_menu()
         )
     else:
-        # Показываем краткую информацию
         response = f"<b>🔔 У вас {len(alerts)} уведомлений</b>\n\n"
 
         # Группируем по крипте
@@ -210,62 +192,29 @@ async def show_my_alerts(message: Message):
 
 
 @router.message(F.text == "📊 Статистика")
+@log_function_call()
 async def show_stats_menu(message: Message):
     """
     Показывает меню выбора криптовалюты для просмотра статистики.
-
-    Args:
-        message (Message): Объект сообщения от пользователя
     """
+    user_id = message.from_user.id
+    logger.info(f"📊 Пользователь {user_id} открыл меню статистики")
+
     await message.answer(
         "📈 <b>Выберите криптовалюту для подробной статистики:</b>",
         reply_markup=Keyboards.get_crypto_selection()
     )
 
 
-@router.message(F.text == "⚙️ Настройки")
-async def show_settings(message: Message):
-    """
-    Показывает меню настроек бота.
-
-    Отображает текущую статистику пользователя и доступные настройки.
-
-    Args:
-        message (Message): Объект сообщения от пользователя
-    """
-    user_id = message.from_user.id
-    alert_count = len(alerts_storage.get_user_alerts(user_id))
-
-    settings_text = f"""
-⚙️ <b>Настройки бота</b>
-
-📊 <b>Статистика:</b>
-• Активных уведомлений: {alert_count}
-• Отслеживаемых пар: {len(Config.POPULAR_CRYPTO)}
-
-🔧 <b>Настройки:</b>
-• Интервал проверки: {Config.ALERT_INTERVAL} сек
-
-👇 <b>Выберите настройку для изменения:</b>
-    """
-
-    await message.answer(
-        settings_text,
-        reply_markup=Keyboards.get_settings_menu()
-    )
-
-
 @router.message(F.text == "📋 Помощь")
+@log_function_call()
 async def show_help(message: Message):
     """
     Показывает справочную информацию по использованию бота.
-
-    Содержит описание всех разделов, работу с уведомлениями
-    и список доступных команд.
-
-    Args:
-        message (Message): Объект сообщения от пользователя
     """
+    user_id = message.from_user.id
+    logger.info(f"📋 Пользователь {user_id} запросил помощь")
+
     help_text = """
 📚 <b>Помощь по боту</b>
 
@@ -274,7 +223,6 @@ async def show_help(message: Message):
 • <b>🚀 Популярные</b> - быстрый просмотр топ-криптовалют
 • <b>🔔 Мои уведомления</b> - управление уведомлениями о ценах
 • <b>📊 Статистика</b> - детальная статистика по парам
-• <b>⚙️ Настройки</b> - настройки бота
 
 📈 <b>Работа с уведомлениями:</b>
 1. Выберите "💰 Котировки"
@@ -299,46 +247,49 @@ async def show_help(message: Message):
 
 
 @router.message(Command("price"))
+@log_function_call()
 async def cmd_price(message: Message):
     """
     Обработчик команды /price для получения цены по символу.
-
-    Формат: /price BTCUSDT
-
-    Args:
-        message (Message): Объект сообщения от пользователя
     """
+    user_id = message.from_user.id
     args = message.text.split()
+
     if len(args) < 2:
+        logger.warning(f"⚠️ Пользователь {user_id} ввел /price без символа")
         await message.answer("❌ Укажите символ: /price BTCUSDT")
         return
 
     symbol = args[1].upper()
+    logger.info(f"💰 Пользователь {user_id} запросил цену {symbol} через команду")
     await show_crypto_price(message, symbol)
 
 
 @router.message(Command("alerts"))
+@log_function_call()
 async def cmd_alerts(message: Message):
     """
     Обработчик команды /alerts для показа уведомлений.
-
-    Args:
-        message (Message): Объект сообщения от пользователя
     """
+    user_id = message.from_user.id
+    logger.info(f"🔔 Пользователь {user_id} вызвал /alerts")
     await show_my_alerts(message)
 
 
 @router.message(Command("cancel"))
+@log_function_call()
 async def cmd_cancel(message: Message, state: FSMContext):
     """
     Обработчик команды /cancel для отмены текущего действия.
-
-    Очищает состояние FSM и возвращает пользователя в главное меню.
-
-    Args:
-        message (Message): Объект сообщения от пользователя
-        state (FSMContext): Контекст состояния FSM
     """
+    user_id = message.from_user.id
+    current_state = await state.get_state()
+
+    if current_state:
+        logger.info(f"❌ Пользователь {user_id} отменил действие (состояние: {current_state})")
+    else:
+        logger.debug(f"❌ Пользователь {user_id} вызвал /cancel без активного состояния")
+
     await state.clear()
     await message.answer(
         "❌ Действие отменено",
@@ -349,20 +300,17 @@ async def cmd_cancel(message: Message, state: FSMContext):
 # ===== ОБРАБОТЧИКИ CALLBACK ДЛЯ КРИПТОВАЛЮТ =====
 
 @router.callback_query(F.data.startswith("crypto_"))
+@log_function_call()
 async def handle_crypto_selection(callback: CallbackQuery):
     """
     Обрабатывает выбор криптовалюты из списка.
-
-    Извлекает символ из callback_data и показывает текущую цену.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
-    await callback.answer()  # Отвечаем на callback, чтобы убрать "часики"
+    user_id = callback.from_user.id
+    await callback.answer()
 
     symbol = callback.data.replace("crypto_", "")
+    logger.info(f"👤 Пользователь {user_id} выбрал криптовалюту {symbol}")
 
-    # Находим короткое имя
     short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol]
     display_name = short_name[0] if short_name else symbol
 
@@ -376,14 +324,15 @@ async def handle_crypto_selection(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "all_prices")
+@log_function_call()
 async def handle_all_prices(callback: CallbackQuery):
     """
     Показывает цены для всех доступных криптовалют.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     await callback.answer()
+
+    logger.info(f"👤 Пользователь {user_id} запросил все котировки")
 
     await safe_edit_message(
         callback.message,
@@ -393,6 +342,7 @@ async def handle_all_prices(callback: CallbackQuery):
     tickers = await bybit_client.get_multiple_tickers(Config.DEFAULT_PAIRS)
 
     if not tickers:
+        logger.error(f"❌ Не удалось получить данные для пользователя {user_id}")
         await safe_edit_message(
             callback.message,
             "❌ Не удалось получить данные"
@@ -403,14 +353,16 @@ async def handle_all_prices(callback: CallbackQuery):
 
     for symbol, ticker in tickers.items():
         price = float(ticker['lastPrice'])
+        # Форматируем цену
+        price_str = f"{int(price)}" if price.is_integer() else f"{price:.8f}".rstrip('0').rstrip('.')
+
         change = float(ticker['price24hPcnt']) * 100
         change_icon = "🟢" if change > 0 else "🔴"
 
-        # Находим короткое имя
         short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol]
         display_name = short_name[0] if short_name else symbol
 
-        response += f"<b>{display_name}</b>: ${price:,.4f} {change_icon} {change:+.4f}%\n"
+        response += f"<b>{display_name}</b>: ${price_str} {change_icon} {change:+.4f}%\n"
 
     await safe_edit_message(
         callback.message,
@@ -420,22 +372,20 @@ async def handle_all_prices(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("detail_"))
+@log_function_call()
 async def handle_detail(callback: CallbackQuery):
     """
     Показывает подробную информацию о выбранной криптовалюте.
-
-    Включает: цену, изменение за 24ч, максимум, минимум, объем,
-    цену открытия и диапазон.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     await callback.answer()
 
     symbol = callback.data.replace("detail_", "")
+    logger.info(f"👤 Пользователь {user_id} запросил детали для {symbol}")
 
     ticker = await bybit_client.get_ticker(symbol)
     if not ticker:
+        logger.error(f"❌ Не удалось получить данные для {symbol}")
         await safe_edit_message(
             callback.message,
             "❌ Не удалось получить данные"
@@ -443,25 +393,39 @@ async def handle_detail(callback: CallbackQuery):
         return
 
     price = float(ticker['lastPrice'])
+    # Форматируем цены
+    price_str = f"{int(price)}" if price.is_integer() else f"{price:.8f}".rstrip('0').rstrip('.')
+
     change = float(ticker['price24hPcnt']) * 100
     high = float(ticker['highPrice24h'])
-    low = float(ticker['lowPrice24h'])
-    volume = float(ticker['volume24h'])
+    high_str = f"{int(high)}" if high.is_integer() else f"{high:.8f}".rstrip('0').rstrip('.')
 
-    # Находим короткое имя
+    low = float(ticker['lowPrice24h'])
+    low_str = f"{int(low)}" if low.is_integer() else f"{low:.8f}".rstrip('0').rstrip('.')
+
+    volume = float(ticker['volume24h'])
+    volume_str = f"{int(volume)}" if volume.is_integer() else f"{volume:.2f}".rstrip('0').rstrip('.')
+
+    prev_price = float(ticker['prevPrice24h'])
+    prev_price_str = f"{int(prev_price)}" if prev_price.is_integer() else f"{prev_price:.8f}".rstrip('0').rstrip('.')
+
+    price_range = high - low
+    price_range_str = f"{int(price_range)}" if price_range.is_integer() else f"{price_range:.8f}".rstrip('0').rstrip(
+        '.')
+
     short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol]
     display_name = short_name[0] if short_name else symbol
 
     response = f"""
 📊 <b>Подробная информация {display_name}</b>
 
-💰 <b>Цена:</b> ${price:,.4f}
+💰 <b>Цена:</b> ${price_str}
 📈 <b>Изменение 24ч:</b> {change:+.4f}%
-⬆️ <b>Максимум 24ч:</b> ${high:,.4f}
-⬇️ <b>Минимум 24ч:</b> ${low:,.4f}
-💎 <b>Объем 24ч:</b> ${volume:,.0f}
-📅 <b>Цена открытия:</b> ${float(ticker['prevPrice24h']):,.4f}
-🔄 <b>Диапазон:</b> ${high - low:,.4f}
+⬆️ <b>Максимум 24ч:</b> ${high_str}
+⬇️ <b>Минимум 24ч:</b> ${low_str}
+💎 <b>Объем 24ч:</b> ${volume_str}
+📅 <b>Цена открытия:</b> ${prev_price_str}
+🔄 <b>Диапазон:</b> ${price_range_str}
 
 <i>Данные с биржи Bybit</i>
     """
@@ -474,18 +438,17 @@ async def handle_detail(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("chart_"))
+@log_function_call()
 async def handle_chart(callback: CallbackQuery):
     """
     Показывает информацию о функции графиков (в разработке).
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     await callback.answer()
 
     symbol = callback.data.replace("chart_", "")
+    logger.info(f"👤 Пользователь {user_id} запросил график для {symbol} (в разработке)")
 
-    # Находим короткое имя
     short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol]
     display_name = short_name[0] if short_name else symbol
 
@@ -503,45 +466,41 @@ async def handle_chart(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("fav_"))
+@log_function_call()
 async def handle_favorite(callback: CallbackQuery):
     """
     Добавляет криптовалюту в избранное пользователя.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     symbol = callback.data.replace("fav_", "")
 
-    # Находим короткое имя
     short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol]
     display_name = short_name[0] if short_name else symbol
 
+    logger.info(f"👤 Пользователь {user_id} добавил {display_name} в избранное")
     await callback.answer(f"✅ {display_name} добавлен в избранное!")
 
 
 # ===== ОБРАБОТЧИКИ ДЛЯ УВЕДОМЛЕНИЙ =====
-# ВАЖНО: Специфичные обработчики должны идти ДО общего обработчика alert_
 
 @router.callback_query(F.data.startswith("alert_up_percent_"))
+@log_function_call()
 async def handle_alert_up_percent(callback: CallbackQuery):
     """
     Устанавливает уведомление на рост цены на заданный процент.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     await callback.answer()
 
-    # Формат: alert_up_percent_BTCUSDT_5
     data_parts = callback.data.replace("alert_up_percent_", "").split("_")
     symbol = data_parts[0]
     percent = float(data_parts[1])
 
-    print(f"📈 Установка уведомления на рост: {symbol} +{percent}%")
+    logger.info(f"📈 Пользователь {user_id} устанавливает уведомление на рост {symbol} +{percent}%")
 
-    # Получаем текущую цену
     ticker = await bybit_client.get_ticker(symbol)
     if not ticker:
+        logger.error(f"❌ Не удалось получить данные для {symbol}")
         await safe_edit_message(
             callback.message,
             "❌ Не удалось получить данные"
@@ -551,7 +510,6 @@ async def handle_alert_up_percent(callback: CallbackQuery):
     current_price = float(ticker['lastPrice'])
     target_price = current_price * (1 + percent / 100)
 
-    # Сохраняем уведомление
     alert_id = await save_alert(
         user_id=callback.from_user.id,
         symbol=symbol,
@@ -560,7 +518,6 @@ async def handle_alert_up_percent(callback: CallbackQuery):
         direction="ВВЕРХ"
     )
 
-    # Находим короткое имя
     short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol][0]
 
     await safe_edit_message(
@@ -568,33 +525,31 @@ async def handle_alert_up_percent(callback: CallbackQuery):
         f"✅ <b>Уведомление #{alert_id} установлено!</b>\n\n"
         f"Криптовалюта: <b>{short_name}</b>\n"
         f"Тип: 📈 <b>Выше на {percent}%</b>\n"
-        f"Текущая цена: <b>${current_price:,.4f}</b>\n"
-        f"Целевая цена: <b>${target_price:,.4f}</b>\n\n"
+        f"Текущая цена: <b>${current_price:.4f}</b>\n"
+        f"Целевая цена: <b>${target_price:.4f}</b>\n\n"
         f"Я уведомлю вас, когда цена достигнет цели!",
         Keyboards.get_back_button("back_to_main")
     )
 
 
 @router.callback_query(F.data.startswith("alert_down_percent_"))
+@log_function_call()
 async def handle_alert_down_percent(callback: CallbackQuery):
     """
     Устанавливает уведомление на падение цены на заданный процент.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     await callback.answer()
 
-    # Формат: alert_down_percent_BTCUSDT_5
     data_parts = callback.data.replace("alert_down_percent_", "").split("_")
     symbol = data_parts[0]
     percent = float(data_parts[1])
 
-    print(f"📉 Установка уведомления на падение: {symbol} -{percent}%")
+    logger.info(f"📉 Пользователь {user_id} устанавливает уведомление на падение {symbol} -{percent}%")
 
-    # Получаем текущую цену
     ticker = await bybit_client.get_ticker(symbol)
     if not ticker:
+        logger.error(f"❌ Не удалось получить данные для {symbol}")
         await safe_edit_message(
             callback.message,
             "❌ Не удалось получить данные"
@@ -604,7 +559,6 @@ async def handle_alert_down_percent(callback: CallbackQuery):
     current_price = float(ticker['lastPrice'])
     target_price = current_price * (1 - percent / 100)
 
-    # Сохраняем уведомление
     alert_id = await save_alert(
         user_id=callback.from_user.id,
         symbol=symbol,
@@ -613,7 +567,6 @@ async def handle_alert_down_percent(callback: CallbackQuery):
         direction="ВНИЗ"
     )
 
-    # Находим короткое имя
     short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol][0]
 
     await safe_edit_message(
@@ -621,33 +574,28 @@ async def handle_alert_down_percent(callback: CallbackQuery):
         f"✅ <b>Уведомление #{alert_id} установлено!</b>\n\n"
         f"Криптовалюта: <b>{short_name}</b>\n"
         f"Тип: 📉 <b>Ниже на {percent}%</b>\n"
-        f"Текущая цена: <b>${current_price:,.4f}</b>\n"
-        f"Целевая цена: <b>${target_price:,.4f}</b>\n\n"
+        f"Текущая цена: <b>${current_price:.4f}</b>\n"
+        f"Целевая цена: <b>${target_price:.4f}</b>\n\n"
         f"Я уведомлю вас, когда цена достигнет цели!",
         Keyboards.get_back_button("back_to_main")
     )
 
 
 @router.callback_query(F.data.startswith("alert_custom_"))
+@log_function_call()
 async def handle_alert_custom(callback: CallbackQuery, state: FSMContext):
     """
     Запрашивает у пользователя ввод своей цены для уведомления.
-
-    Переводит бота в состояние ожидания ввода цены.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
-        state (FSMContext): Контекст состояния FSM
     """
+    user_id = callback.from_user.id
     await callback.answer()
 
     symbol = callback.data.replace("alert_custom_", "")
+    logger.info(f"⚙️ Пользователь {user_id} начал установку своей цены для {symbol}")
 
-    # Сохраняем данные в состоянии
     await state.update_data(symbol=symbol)
     await state.set_state(AlertState.waiting_for_custom_price)
 
-    # Получаем текущую цену для справки
     ticker = await bybit_client.get_ticker(symbol)
     if ticker:
         current_price = float(ticker['lastPrice'])
@@ -657,7 +605,7 @@ async def handle_alert_custom(callback: CallbackQuery, state: FSMContext):
         await safe_edit_message(
             callback.message,
             f"💰 <b>Установка своей цены для {short_name}</b>\n\n"
-            f"Текущая цена: <b>${current_price:,.4f}</b>\n\n"
+            f"Текущая цена: <b>${current_price:.4f}</b>\n\n"
             f"<b>Введите желаемую цену:</b>\n"
             f"• Для уведомления о росте - цена ВЫШЕ текущей\n"
             f"• Для уведомления о падении - цена НИЖЕ текущей\n\n"
@@ -666,6 +614,7 @@ async def handle_alert_custom(callback: CallbackQuery, state: FSMContext):
             Keyboards.get_cancel_keyboard(f"cancel_custom_{symbol}")
         )
     else:
+        logger.error(f"❌ Не удалось получить текущую цену для {symbol}")
         await safe_edit_message(
             callback.message,
             "❌ Не удалось получить текущую цену"
@@ -674,18 +623,18 @@ async def handle_alert_custom(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("cancel_custom_"))
+@log_function_call()
 async def handle_cancel_custom(callback: CallbackQuery, state: FSMContext):
     """
     Отменяет процесс установки своей цены для уведомления.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
-        state (FSMContext): Контекст состояния FSM
     """
+    user_id = callback.from_user.id
     await callback.answer()
 
     symbol = callback.data.replace("cancel_custom_", "")
     await state.clear()
+
+    logger.info(f"❌ Пользователь {user_id} отменил установку своей цены для {symbol}")
 
     short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol][0]
 
@@ -697,14 +646,15 @@ async def handle_cancel_custom(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "new_alert")
+@log_function_call()
 async def handle_new_alert(callback: CallbackQuery):
     """
     Начинает процесс создания нового уведомления из меню уведомлений.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     await callback.answer()
+
+    logger.info(f"➕ Пользователь {user_id} начал создание нового уведомления")
 
     await safe_edit_message(
         callback.message,
@@ -715,14 +665,15 @@ async def handle_new_alert(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "new_alert_from_select")
+@log_function_call()
 async def handle_new_alert_from_select(callback: CallbackQuery):
     """
     Начинает процесс создания нового уведомления из меню выбора криптовалют.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     await callback.answer()
+
+    logger.info(f"➕ Пользователь {user_id} начал создание нового уведомления из меню выбора")
 
     await safe_edit_message(
         callback.message,
@@ -733,16 +684,16 @@ async def handle_new_alert_from_select(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "list_alerts")
+@log_function_call()
 async def handle_list_alerts(callback: CallbackQuery):
     """
     Показывает список всех уведомлений пользователя с подробной информацией.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     await callback.answer()
 
-    user_id = callback.from_user.id
+    logger.info(f"📋 Пользователь {user_id} запросил список уведомлений")
+
     alerts = alerts_storage.get_user_alerts(user_id)
 
     if not alerts:
@@ -756,18 +707,16 @@ async def handle_list_alerts(callback: CallbackQuery):
 
     response = "<b>🔔 Ваши уведомления:</b>\n\n"
 
-    for i, alert in enumerate(alerts[:10], 1):  # Показываем первые 10
+    for i, alert in enumerate(alerts[:10], 1):
         direction_icon = "📈" if alert['direction'] == 'ВВЕРХ' else "📉"
 
-        # Находим короткое имя
         short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == alert['symbol']]
         display_name = short_name[0] if short_name else alert['symbol']
 
         response += f"<b>#{i}. {display_name}</b>\n"
-        response += f"   {direction_icon} {alert['direction']} до ${alert['target_price']:,.2f}\n"
-        response += f"   Текущая: ${alert['current_price']:,.2f}\n"
+        response += f"   {direction_icon} {alert['direction']} до ${alert['target_price']:.4f}\n"
+        response += f"   Текущая: ${alert['current_price']:.4f}\n"
 
-        # Рассчитываем разницу в процентах
         diff_percent = ((alert['target_price'] - alert['current_price']) / alert['current_price']) * 100
         response += f"   Осталось: {abs(diff_percent):.1f}%\n\n"
 
@@ -782,23 +731,22 @@ async def handle_list_alerts(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("delete_alert_"))
+@log_function_call()
 async def handle_delete_alert(callback: CallbackQuery):
     """
     Удаляет конкретное уведомление пользователя по его ID.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     await callback.answer()
 
     try:
         alert_id = int(callback.data.replace("delete_alert_", ""))
-        user_id = callback.from_user.id
+
+        logger.info(f"🗑️ Пользователь {user_id} удаляет уведомление #{alert_id}")
 
         alert = alerts_storage.get_alert(user_id, alert_id)
 
         if alert:
-            # Находим короткое имя
             short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == alert['symbol']]
             display_name = short_name[0] if short_name else alert['symbol']
 
@@ -807,7 +755,7 @@ async def handle_delete_alert(callback: CallbackQuery):
                     callback.message,
                     f"🗑️ <b>Уведомление #{alert_id} удалено</b>\n\n"
                     f"Криптовалюта: {display_name}\n"
-                    f"Цель: ${alert['target_price']:,.2f}",
+                    f"Цель: ${alert['target_price']:.4f}",
                     Keyboards.get_back_button("back_to_alerts_list")
                 )
             else:
@@ -820,16 +768,15 @@ async def handle_delete_alert(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "clear_alerts")
+@log_function_call()
 async def handle_clear_alerts(callback: CallbackQuery):
     """
     Удаляет все уведомления пользователя.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     await callback.answer()
 
-    user_id = callback.from_user.id
+    logger.info(f"🗑️ Пользователь {user_id} очищает все уведомления")
 
     if alerts_storage.has_user_alerts(user_id):
         alert_count = alerts_storage.remove_all_user_alerts(user_id)
@@ -845,26 +792,25 @@ async def handle_clear_alerts(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "back_to_alerts_list")
+@log_function_call()
 async def handle_back_to_alerts_list(callback: CallbackQuery):
     """
     Возвращает пользователя к списку уведомлений.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
     await callback.answer()
     await handle_list_alerts(callback)
 
 
 @router.callback_query(F.data == "alert_help")
+@log_function_call()
 async def handle_alert_help(callback: CallbackQuery):
     """
     Показывает справку по уведомлениям.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     await callback.answer()
+
+    logger.info(f"❓ Пользователь {user_id} запросил помощь по уведомлениям")
 
     help_text = f"""
 ❓ <b>Помощь по уведомлениям</b>
@@ -893,37 +839,34 @@ async def handle_alert_help(callback: CallbackQuery):
     )
 
 
-# Этот обработчик должен быть ПОСЛЕ всех специфичных alert_ обработчиков
+# Обработчик для alert_ (должен быть после всех специфичных alert_ обработчиков)
 @router.callback_query(F.data.startswith("alert_"))
+@log_function_call()
 async def handle_alert_setup(callback: CallbackQuery):
     """
     Показывает меню настройки уведомления для выбранной криптовалюты.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
     """
+    user_id = callback.from_user.id
     await callback.answer()
 
-    # Проверяем, что это не другие типы alert_ (они уже обработаны выше)
+    # Проверяем, что это не другие типы alert_
     if callback.data in ["alert_settings", "alert_help", "new_alert", "new_alert_from_select",
                          "list_alerts", "clear_alerts", "back_to_alerts_list"]:
         return
 
-    # Убеждаемся, что это не процентные уведомления
     if "_percent_" in callback.data:
         return
 
     symbol = callback.data.replace("alert_", "")
 
-    print(f"🔔 Настройка уведомления для {symbol}")
+    logger.info(f"🔔 Пользователь {user_id} настраивает уведомление для {symbol}")
 
-    # Находим короткое имя
     short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol]
     display_name = short_name[0] if short_name else symbol
 
-    # Получаем текущую цену
     ticker = await bybit_client.get_ticker(symbol)
     if not ticker:
+        logger.error(f"❌ Не удалось получить данные для {symbol}")
         await safe_edit_message(
             callback.message,
             "❌ Не удалось получить данные"
@@ -955,20 +898,16 @@ async def handle_alert_setup(callback: CallbackQuery):
 # ===== ОБРАБОТЧИКИ КНОПОК НАЗАД =====
 
 @router.callback_query(F.data.startswith("back_to_"))
+@log_function_call()
 async def handle_back_button(callback: CallbackQuery, state: FSMContext):
     """
     Обрабатывает различные кнопки "Назад" в приложении.
-
-    В зависимости от callback_data возвращает пользователя
-    в соответствующее меню.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
-        state (FSMContext): Контекст состояния FSM
     """
+    user_id = callback.from_user.id
     await callback.answer()
 
     back_to = callback.data
+    logger.debug(f"↩️ Пользователь {user_id} нажал кнопку 'Назад': {back_to}")
 
     if back_to == "back_to_main":
         await state.clear()
@@ -993,141 +932,42 @@ async def handle_back_button(callback: CallbackQuery, state: FSMContext):
         symbol = back_to.replace("back_to_price_", "")
         await show_crypto_price_callback(callback, symbol)
 
-    elif back_to == "alert_settings":
-        await safe_edit_message(
-            callback.message,
-            "⚙️ <b>Настройки уведомлений</b>\n\n"
-            "🚧 <i>Функция в разработке...</i>",
-            Keyboards.get_back_button("back_to_main")
-        )
-
-
-# ===== ОБРАБОТЧИКИ НАСТРОЕК =====
-
-@router.callback_query(F.data == "interval_setting")
-async def handle_interval_setting(callback: CallbackQuery):
-    """
-    Показывает информацию о настройке интервала проверки уведомлений.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
-    """
-    await callback.answer()
-
-    await safe_edit_message(
-        callback.message,
-        f"⏰ <b>Текущий интервал проверки: {Config.ALERT_INTERVAL} сек</b>\n\n"
-        f"🚧 <i>Изменение интервала в разработке...</i>\n\n"
-        f"Сейчас бот проверяет уведомления каждые {Config.ALERT_INTERVAL} секунд",
-        Keyboards.get_back_button("back_to_main")
-    )
-
-
-@router.callback_query(F.data == "theme_setting")
-async def handle_theme_setting(callback: CallbackQuery):
-    """
-    Показывает информацию о настройке темы оформления.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
-    """
-    await callback.answer()
-
-    await safe_edit_message(
-        callback.message,
-        "🎨 <b>Настройки темы</b>\n\n"
-        "🚧 <i>Функция в разработке...</i>\n\n"
-        "Скоро здесь можно будет выбрать:\n"
-        "• Светлая/темная тема\n"
-        "• Цветовые схемы\n"
-        "• Шрифты",
-        Keyboards.get_back_button("back_to_main")
-    )
-
-
-@router.callback_query(F.data == "notify_setting")
-async def handle_notify_setting(callback: CallbackQuery):
-    """
-    Показывает информацию о настройках уведомлений.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
-    """
-    await callback.answer()
-
-    await safe_edit_message(
-        callback.message,
-        "🔕 <b>Настройки уведомлений</b>\n\n"
-        "🚧 <i>Функция в разработке...</i>\n\n"
-        "Скоро здесь можно будет настроить:\n"
-        "• Типы уведомлений (звук, вибрация)\n"
-        "• Время тишины\n"
-        "• Приоритеты",
-        Keyboards.get_back_button("back_to_main")
-    )
-
-
-@router.callback_query(F.data == "export_data")
-async def handle_export_data(callback: CallbackQuery):
-    """
-    Показывает информацию об экспорте данных.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
-    """
-    await callback.answer()
-
-    await safe_edit_message(
-        callback.message,
-        "💾 <b>Экспорт данных</b>\n\n"
-        "🚧 <i>Функция в разработке...</i>\n\n"
-        "Скоро здесь можно будет:\n"
-        "• Экспортировать историю уведомлений\n"
-        "• Скачать данные в CSV/Excel\n"
-        "• Сохранить настройки",
-        Keyboards.get_back_button("back_to_main")
-    )
-
 
 # ===== ОБРАБОТЧИКИ СООБЩЕНИЙ ДЛЯ FSM =====
 
 @router.message(AlertState.waiting_for_custom_price)
+@log_function_call()
 async def process_custom_price(message: Message, state: FSMContext):
     """
     Обрабатывает введенную пользователем цену для уведомления.
-
-    Проверяет корректность ввода, определяет направление (вверх/вниз)
-    и сохраняет уведомление.
-
-    Args:
-        message (Message): Объект сообщения от пользователя
-        state (FSMContext): Контекст состояния FSM
     """
+    user_id = message.from_user.id
+
     try:
         target_price = float(message.text.replace(",", "."))
 
-        # Получаем данные из состояния
         data = await state.get_data()
         symbol = data.get("symbol")
 
         if not symbol:
+            logger.error(f"❌ Ошибка данных в состоянии для пользователя {user_id}")
             await message.answer("❌ Ошибка данных")
             await state.clear()
             return
 
-        # Получаем текущую цену
+        logger.info(f"💰 Пользователь {user_id} ввел свою цену {target_price} для {symbol}")
+
         ticker = await bybit_client.get_ticker(symbol)
         if not ticker:
+            logger.error(f"❌ Не удалось получить текущую цену для {symbol}")
             await message.answer("❌ Не удалось получить текущую цену")
             await state.clear()
             return
 
         current_price = float(ticker['lastPrice'])
 
-        # Определяем направление
         direction = "ВВЕРХ" if target_price > current_price else "ВНИЗ"
 
-        # Сохраняем уведомление
         alert_id = await save_alert(
             user_id=message.from_user.id,
             symbol=symbol,
@@ -1136,7 +976,6 @@ async def process_custom_price(message: Message, state: FSMContext):
             direction=direction
         )
 
-        # Находим короткое имя
         short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol][0]
         direction_icon = "📈" if direction == "ВВЕРХ" else "📉"
 
@@ -1145,8 +984,8 @@ async def process_custom_price(message: Message, state: FSMContext):
 
 Криптовалюта: <b>{short_name}</b>
 Тип: {direction_icon} <b>{direction}</b>
-Текущая цена: <b>${current_price:,.4f}</b>
-Целевая цена: <b>${target_price:,.4f}</b>
+Текущая цена: <b>${current_price:.4f}</b>
+Целевая цена: <b>${target_price:.4f}</b>
 
 Я уведомлю вас, когда цена достигнет цели!
         """
@@ -1159,6 +998,7 @@ async def process_custom_price(message: Message, state: FSMContext):
         await state.clear()
 
     except ValueError:
+        logger.warning(f"⚠️ Пользователь {user_id} ввел некорректную цену: {message.text}")
         await message.answer("❌ Неверный формат цены. Введите число, например: 50000 или 2500.50")
 
 
@@ -1167,19 +1007,6 @@ async def process_custom_price(message: Message, state: FSMContext):
 async def save_alert(user_id: int, symbol: str, target_price: float, current_price: float, direction: str) -> int:
     """
     Сохраняет новое уведомление в хранилище.
-
-    Генерирует уникальный ID для уведомления и добавляет его
-    в список уведомлений пользователя.
-
-    Args:
-        user_id (int): ID пользователя Telegram
-        symbol (str): Торговый символ (например, "BTCUSDT")
-        target_price (float): Целевая цена для уведомления
-        current_price (float): Текущая цена при создании уведомления
-        direction (str): Направление ("ВВЕРХ" или "ВНИЗ")
-
-    Returns:
-        int: ID созданного уведомления
     """
     alert = {
         'symbol': symbol,
@@ -1191,17 +1018,13 @@ async def save_alert(user_id: int, symbol: str, target_price: float, current_pri
     }
 
     alert_id = alerts_storage.add_alert(user_id, alert)
-    print(f"✅ Уведомление #{alert_id} сохранено для пользователя {user_id}: {symbol} {direction} до {target_price}")
+    logger.info(f"✅ Уведомление #{alert_id} сохранено для пользователя {user_id}: {symbol} {direction} до {target_price:.4f}")
     return alert_id
 
 
 async def show_crypto_price(message, symbol: str):
     """
     Показывает цену криптовалюты в ответ на текстовое сообщение.
-
-    Args:
-        message (Message): Объект сообщения от пользователя
-        symbol (str): Торговый символ (например, "BTCUSDT")
     """
     ticker = await bybit_client.get_ticker(symbol)
 
@@ -1215,10 +1038,6 @@ async def show_crypto_price(message, symbol: str):
 async def show_crypto_price_callback(callback: CallbackQuery, symbol: str):
     """
     Показывает цену криптовалюты в ответ на callback запрос.
-
-    Args:
-        callback (CallbackQuery): Объект callback запроса
-        symbol (str): Торговый символ (например, "BTCUSDT")
     """
     ticker = await bybit_client.get_ticker(symbol)
 
@@ -1235,19 +1054,25 @@ async def show_crypto_price_callback(callback: CallbackQuery, symbol: str):
 async def format_and_send_price(message_obj, symbol: str, ticker: dict, is_callback: bool = False):
     """
     Форматирует данные о цене и отправляет их пользователю.
-
-    Args:
-        message_obj (Message): Объект сообщения для ответа
-        symbol (str): Торговый символ (например, "BTCUSDT")
-        ticker (dict): Данные тикера от Bybit API
-        is_callback (bool): Флаг, указывающий, что это ответ на callback
     """
     price = float(ticker['lastPrice'])
+
+    # Форматируем цену без лишних нулей
+    if price.is_integer():
+        price_str = f"{int(price)}"
+    else:
+        price_str = f"{price:.8f}".rstrip('0').rstrip('.')
+
     change = float(ticker['price24hPcnt']) * 100
     high = float(ticker['highPrice24h'])
     low = float(ticker['lowPrice24h'])
 
-    # Находим короткое имя
+    # Форматируем остальные числа
+    high_str = f"{int(high)}" if high.is_integer() else f"{high:.8f}".rstrip('0').rstrip('.')
+    low_str = f"{int(low)}" if low.is_integer() else f"{low:.8f}".rstrip('0').rstrip('.')
+    volume = float(ticker['volume24h'])
+    volume_str = f"{int(volume)}" if volume.is_integer() else f"{volume:.2f}".rstrip('0').rstrip('.')
+
     short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol]
     display_name = short_name[0] if short_name else symbol
 
@@ -1257,11 +1082,11 @@ async def format_and_send_price(message_obj, symbol: str, ticker: dict, is_callb
     response = f"""
 <b>{display_name}</b>
 
-💰 <b>Цена:</b> ${price:,.4f}
+💰 <b>Цена:</b> ${price_str}
 {change_icon} <b>Изменение 24ч:</b> {change_color} {change:+.4f}%
-⬆️ <b>Макс 24ч:</b> ${high:,.4f}
-⬇️ <b>Мин 24ч:</b> ${low:,.4f}
-📊 <b>Объем 24ч:</b> ${float(ticker['volume24h']):,.0f}
+⬆️ <b>Макс 24ч:</b> ${high_str}
+⬇️ <b>Мин 24ч:</b> ${low_str}
+📊 <b>Объем 24ч:</b> ${volume_str}
 
 <i>Данные с биржи Bybit</i>
     """
@@ -1284,19 +1109,17 @@ async def format_and_send_price(message_obj, symbol: str, ticker: dict, is_callb
 async def check_alerts_task():
     """
     Фоновая задача для проверки уведомлений пользователей.
-
-    Запускается в бесконечном цикле и периодически проверяет,
-    достигли ли цены целевых значений для активных уведомлений.
-    При достижении цели отправляет уведомление пользователю
-    и удаляет выполненное уведомление.
-
-    Интервал проверки задается в Config.ALERT_INTERVAL.
     """
+    logger.info("🚀 Запуск фоновой задачи проверки уведомлений")
+
     while True:
         try:
-            print(f"🔍 Проверка уведомлений... Активных пользователей: {len(alerts_storage.get_all_users())}")
+            active_users = len(alerts_storage.get_all_users())
+            total_alerts = alerts_storage.get_total_alerts_count()
 
-            completed_alerts = []  # Список для сбора выполненных уведомлений
+            logger.info(f"🔍 Проверка уведомлений... Активных пользователей: {active_users}, всего уведомлений: {total_alerts}")
+
+            completed_alerts = []
 
             for user_id in alerts_storage.get_all_users():
                 alerts = alerts_storage.get_user_alerts(user_id)
@@ -1304,28 +1127,22 @@ async def check_alerts_task():
                 for alert in alerts:
                     symbol = alert['symbol']
 
-                    # Получаем текущую цену
                     ticker = await bybit_client.get_ticker(symbol)
                     if ticker:
                         current_price = float(ticker['lastPrice'])
-
-                        # Обновляем текущую цену в алерте
                         alert['current_price'] = current_price
 
-                        # Проверяем достижение цели
                         target_reached = False
                         if alert['direction'] == "ВВЕРХ" and current_price >= alert['target_price']:
                             target_reached = True
-                            print(f"🎯 Цель достигнута! {symbol}: {current_price} >= {alert['target_price']}")
+                            logger.info(f"🎯 Цель достигнута! {symbol}: {current_price:.4f} >= {alert['target_price']:.4f}")
                         elif alert['direction'] == "ВНИЗ" and current_price <= alert['target_price']:
                             target_reached = True
-                            print(f"🎯 Цель достигнута! {symbol}: {current_price} <= {alert['target_price']}")
+                            logger.info(f"🎯 Цель достигнута! {symbol}: {current_price:.4f} <= {alert['target_price']:.4f}")
 
                         if target_reached:
-                            # Находим короткое имя
                             short_name = [k for k, v in Config.POPULAR_CRYPTO.items() if v == symbol]
                             display_name = short_name[0] if short_name else symbol
-
                             direction_icon = "📈" if alert['direction'] == "ВВЕРХ" else "📉"
 
                             try:
@@ -1333,27 +1150,25 @@ async def check_alerts_task():
                                     user_id,
                                     f"🚨 <b>УВЕДОМЛЕНИЕ #{alert['id']}</b>\n\n"
                                     f"{display_name} достиг цели!\n"
-                                    f"{direction_icon} <b>{alert['direction']}</b> до ${alert['target_price']:,.2f}\n"
-                                    f"Текущая цена: <b>${current_price:,.4f}</b>\n\n"
+                                    f"{direction_icon} <b>{alert['direction']}</b> до ${alert['target_price']:.4f}\n"
+                                    f"Текущая цена: <b>${current_price:.4f}</b>\n\n"
                                     f"<i>Уведомление выполнено ✅</i>"
                                 )
 
-                                # Добавляем в список на удаление
+                                logger.info(f"📨 Отправлено уведомление #{alert['id']} пользователю {user_id}")
                                 completed_alerts.append((user_id, alert['id']))
 
                             except Exception as e:
-                                print(f"❌ Ошибка отправки уведомления пользователю {user_id}: {e}")
+                                logger.error(f"❌ Ошибка отправки уведомления пользователю {user_id}: {e}")
 
-            # Удаляем выполненные уведомления
             if completed_alerts:
                 alerts_storage.cleanup_completed_alerts(completed_alerts)
-                print(f"🗑️ Удалено {len(completed_alerts)} выполненных уведомлений")
+                logger.info(f"🗑️ Удалено {len(completed_alerts)} выполненных уведомлений")
 
-            # Ждем перед следующей проверкой
             await asyncio.sleep(Config.ALERT_INTERVAL)
 
         except Exception as e:
-            print(f"❌ Ошибка в задаче проверки уведомлений: {e}")
+            logger.error(f"❌ Ошибка в задаче проверки уведомлений: {e}", exc_info=True)
             await asyncio.sleep(60)
 
 
@@ -1362,17 +1177,11 @@ async def check_alerts_task():
 def register_handlers(dp, bot_instance):
     """
     Регистрирует все обработчики в диспетчере и запускает фоновые задачи.
-
-    Args:
-        dp (Dispatcher): Диспетчер Aiogram
-        bot_instance (Bot): Экземпляр бота
     """
     dp.include_router(router)
 
-    # Сохраняем ссылку на бота для фоновой задачи
     global bot
     bot = bot_instance
 
-    # Запускаем фоновую задачу проверки уведомлений
     asyncio.create_task(check_alerts_task())
-    print("🚀 Фоновая задача проверки уведомлений запущена")
+    logger.info("🚀 Фоновая задача проверки уведомлений запущена")

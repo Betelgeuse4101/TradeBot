@@ -2,10 +2,11 @@ import json
 import os
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-import logging
 from pathlib import Path
+from logger import get_logger, log_function_call
 
-logger = logging.getLogger(__name__)
+# Получаем логгер для alerts_storage
+logger = get_logger('alerts_storage')
 
 
 class AlertsStorage:
@@ -35,10 +36,14 @@ class AlertsStorage:
         self.storage_path = Path(storage_path)
         self.auto_save = auto_save
         self.user_alerts: Dict[int, List[Dict[str, Any]]] = {}
+        self.modified = False
+
+        logger.info(f"📁 Инициализация хранилища уведомлений: {storage_path}")
 
         # Загружаем существующие уведомления
         self.load()
 
+    @log_function_call()
     def load(self) -> bool:
         """
         Загружает уведомления из JSON файла.
@@ -48,10 +53,13 @@ class AlertsStorage:
         """
         try:
             if not self.storage_path.exists():
-                logger.info(f"Файл {self.storage_path} не найден, создаю новое хранилище")
+                logger.info(f"📄 Файл {self.storage_path} не найден, создаю новое хранилище")
                 self.user_alerts = {}
                 self.save()
                 return True
+
+            file_size = self.storage_path.stat().st_size
+            logger.debug(f"📂 Размер файла: {file_size} байт")
 
             with open(self.storage_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -67,21 +75,30 @@ class AlertsStorage:
                     if 'current_price' in alert and isinstance(alert['current_price'], str):
                         alert['current_price'] = float(alert['current_price'])
 
-            logger.info(
-                f"Загружено {self.get_total_alerts_count()} уведомлений для {len(self.user_alerts)} пользователей")
+            total_alerts = self.get_total_alerts_count()
+            total_users = len(self.user_alerts)
+
+            logger.info(f"✅ Загружено {total_alerts} уведомлений для {total_users} пользователей")
+
+            if total_alerts > 0:
+                # Логируем распределение по пользователям
+                for user_id, alerts in self.user_alerts.items():
+                    logger.debug(f"👤 Пользователь {user_id}: {len(alerts)} уведомлений")
+
             return True
 
         except json.JSONDecodeError as e:
-            logger.error(f"Ошибка парсинга JSON файла {self.storage_path}: {e}")
+            logger.error(f"❌ Ошибка парсинга JSON файла {self.storage_path}: {e}")
             # Создаем резервную копию поврежденного файла
             self._backup_corrupted_file()
             self.user_alerts = {}
             return False
         except Exception as e:
-            logger.error(f"Ошибка загрузки уведомлений: {e}")
+            logger.error(f"❌ Ошибка загрузки уведомлений: {e}")
             self.user_alerts = {}
             return False
 
+    @log_function_call()
     def save(self) -> bool:
         """
         Сохраняет уведомления в JSON файл.
@@ -112,11 +129,13 @@ class AlertsStorage:
             # Заменяем основной файл временным
             temp_path.replace(self.storage_path)
 
-            logger.debug(f"💾 Сохранено {self.get_total_alerts_count()} уведомлений")
+            total_alerts = self.get_total_alerts_count()
+            logger.debug(f"💾 Сохранено {total_alerts} уведомлений")
+            self.modified = False
             return True
 
         except Exception as e:
-            logger.error(f"Ошибка сохранения уведомлений: {e}")
+            logger.error(f"❌ Ошибка сохранения уведомлений: {e}")
             return False
 
     def _backup_corrupted_file(self):
@@ -132,8 +151,9 @@ class AlertsStorage:
                 self.storage_path.rename(backup_path)
                 logger.info(f"📦 Поврежденный файл сохранен как {backup_path}")
             except Exception as e:
-                logger.error(f"Не удалось создать резервную копию: {e}")
+                logger.error(f"❌ Не удалось создать резервную копию: {e}")
 
+    @log_function_call()
     def add_alert(self, user_id: int, alert_data: Dict[str, Any]) -> int:
         """
         Добавляет новое уведомление для пользователя.
@@ -147,6 +167,7 @@ class AlertsStorage:
         """
         if user_id not in self.user_alerts:
             self.user_alerts[user_id] = []
+            logger.debug(f"👤 Создана запись для нового пользователя {user_id}")
 
         # Генерируем уникальный ID
         if self.user_alerts[user_id]:
@@ -162,13 +183,15 @@ class AlertsStorage:
             alert_data['created_at'] = datetime.now().isoformat()
 
         self.user_alerts[user_id].append(alert_data)
+        self.modified = True
 
         if self.auto_save:
             self.save()
 
-        logger.info(f"✅ Добавлено уведомление #{alert_id} для пользователя {user_id}")
+        logger.info(f"✅ Добавлено уведомление #{alert_id} для пользователя {user_id}: {alert_data.get('symbol')}")
         return alert_id
 
+    @log_function_call()
     def remove_alert(self, user_id: int, alert_id: int) -> bool:
         """
         Удаляет конкретное уведомление пользователя.
@@ -181,24 +204,31 @@ class AlertsStorage:
             bool: True если удаление успешно, False если уведомление не найдено
         """
         if user_id not in self.user_alerts:
+            logger.warning(f"⚠️ Попытка удаления уведомления несуществующего пользователя {user_id}")
             return False
 
         for i, alert in enumerate(self.user_alerts[user_id]):
             if alert['id'] == alert_id:
                 removed_alert = self.user_alerts[user_id].pop(i)
+                symbol = removed_alert.get('symbol', 'unknown')
 
                 # Если у пользователя не осталось уведомлений, удаляем запись
                 if not self.user_alerts[user_id]:
                     del self.user_alerts[user_id]
+                    logger.debug(f"👤 Удалена запись пользователя {user_id} (нет уведомлений)")
+
+                self.modified = True
 
                 if self.auto_save:
                     self.save()
 
-                logger.info(f"🗑️ Удалено уведомление #{alert_id} для пользователя {user_id}")
+                logger.info(f"🗑️ Удалено уведомление #{alert_id} для пользователя {user_id} ({symbol})")
                 return True
 
+        logger.warning(f"⚠️ Уведомление #{alert_id} для пользователя {user_id} не найдено")
         return False
 
+    @log_function_call()
     def remove_all_user_alerts(self, user_id: int) -> int:
         """
         Удаляет все уведомления пользователя.
@@ -210,10 +240,12 @@ class AlertsStorage:
             int: Количество удаленных уведомлений
         """
         if user_id not in self.user_alerts:
+            logger.debug(f"👤 Пользователь {user_id} не имеет уведомлений")
             return 0
 
         count = len(self.user_alerts[user_id])
         del self.user_alerts[user_id]
+        self.modified = True
 
         if self.auto_save:
             self.save()
@@ -231,7 +263,9 @@ class AlertsStorage:
         Returns:
             List[Dict]: Список уведомлений пользователя
         """
-        return self.user_alerts.get(user_id, []).copy()
+        alerts = self.user_alerts.get(user_id, []).copy()
+        logger.debug(f"👤 Пользователь {user_id}: {len(alerts)} уведомлений")
+        return alerts
 
     def get_alert(self, user_id: int, alert_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -247,9 +281,12 @@ class AlertsStorage:
         alerts = self.user_alerts.get(user_id, [])
         for alert in alerts:
             if alert['id'] == alert_id:
+                logger.debug(f"🔍 Найдено уведомление #{alert_id} для пользователя {user_id}")
                 return alert.copy()
+        logger.debug(f"🔍 Уведомление #{alert_id} для пользователя {user_id} не найдено")
         return None
 
+    @log_function_call()
     def update_alert(self, user_id: int, alert_id: int, updated_data: Dict[str, Any]) -> bool:
         """
         Обновляет существующее уведомление.
@@ -263,6 +300,7 @@ class AlertsStorage:
             bool: True если обновление успешно, False если уведомление не найдено
         """
         if user_id not in self.user_alerts:
+            logger.warning(f"⚠️ Попытка обновления уведомления несуществующего пользователя {user_id}")
             return False
 
         for i, alert in enumerate(self.user_alerts[user_id]):
@@ -274,6 +312,7 @@ class AlertsStorage:
                     updated_data['created_at'] = alert['created_at']
 
                 self.user_alerts[user_id][i] = updated_data
+                self.modified = True
 
                 if self.auto_save:
                     self.save()
@@ -281,6 +320,7 @@ class AlertsStorage:
                 logger.info(f"✏️ Обновлено уведомление #{alert_id} для пользователя {user_id}")
                 return True
 
+        logger.warning(f"⚠️ Уведомление #{alert_id} для пользователя {user_id} не найдено")
         return False
 
     def has_user_alerts(self, user_id: int) -> bool:
@@ -330,8 +370,11 @@ class AlertsStorage:
                     alert_copy = alert.copy()
                     alert_copy['user_id'] = user_id
                     result.append(alert_copy)
+
+        logger.debug(f"🔍 Найдено {len(result)} уведомлений для {symbol}")
         return result
 
+    @log_function_call()
     def cleanup_completed_alerts(self, completed_alert_ids: List[tuple]) -> int:
         """
         Удаляет выполненные уведомления.
@@ -347,6 +390,9 @@ class AlertsStorage:
             if self.remove_alert(user_id, alert_id):
                 removed_count += 1
 
+        if removed_count > 0:
+            logger.info(f"🧹 Удалено {removed_count} выполненных уведомлений")
+
         return removed_count
 
     def export_to_dict(self) -> Dict:
@@ -356,11 +402,13 @@ class AlertsStorage:
         Returns:
             Dict: Словарь со всеми уведомлениями
         """
+        logger.debug("📤 Экспорт уведомлений в словарь")
         return {
             str(user_id): alerts.copy()
             for user_id, alerts in self.user_alerts.items()
         }
 
+    @log_function_call()
     def import_from_dict(self, data: Dict) -> int:
         """
         Импортирует уведомления из словаря.
@@ -382,6 +430,8 @@ class AlertsStorage:
                 if 'id' in alert and 'symbol' in alert and 'target_price' in alert:
                     self.user_alerts[user_id].append(alert)
                     count += 1
+
+        self.modified = True
 
         if self.auto_save:
             self.save()

@@ -1,11 +1,10 @@
 import aiohttp
 import asyncio
 from typing import Dict, List, Optional
-import logging
+from logger import get_logger, log_function_call
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Получаем логгер для bybit_client
+logger = get_logger('bybit_client')
 
 
 class BybitClient:
@@ -37,13 +36,18 @@ class BybitClient:
             "https://api-demo.bybit.com"
         ]
         self.current_url_index = 0
+        self.request_count = 0
+        self.error_count = 0
+        logger.debug("🔧 Инициализация Bybit клиента")
 
     async def _get_session(self):
         """Создает или возвращает существующую сессию"""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
+            logger.debug("🔌 Создана новая HTTP сессия")
         return self.session
 
+    @log_function_call()
     async def get_ticker(self, symbol: str) -> Optional[Dict]:
         """
         Получает данные по тикеру для указанного символа.
@@ -59,6 +63,9 @@ class BybitClient:
                            Содержит поля: lastPrice, price24hPcnt,
                            highPrice24h, lowPrice24h, volume24h и др.
         """
+        self.request_count += 1
+        logger.debug(f"📡 Запрос #{self.request_count} для {symbol}")
+
         # Пробуем разные URL если основной не работает
         for attempt in range(len(self.alternative_urls)):
             try:
@@ -74,12 +81,11 @@ class BybitClient:
 
                 session = await self._get_session()
 
-                logger.info(f"Запрос к Bybit API: {url} с параметрами {params}")
+                logger.debug(f"Запрос к {base_url} для {symbol}")
 
                 async with session.get(url, params=params, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
-                        logger.info(f"Ответ от Bybit API: {data}")
 
                         # Проверяем структуру ответа
                         if data.get("retCode") == 0:
@@ -89,26 +95,32 @@ class BybitClient:
                                 ticker_data = ticker_list[0]
                                 # Успешный запрос, запоминаем рабочий URL
                                 self.current_url_index = url_index
+                                price = float(ticker_data.get('lastPrice', 0))
+                                logger.debug(f"✅ {symbol}: ${price:.4f}")
                                 return ticker_data
                             else:
-                                logger.error(f"Пустой список тикеров для {symbol}")
+                                logger.warning(f"⚠️ Пустой список тикеров для {symbol}")
                         else:
-                            logger.error(f"Ошибка API Bybit: {data.get('retMsg')}")
+                            error_msg = data.get('retMsg', 'Unknown error')
+                            logger.error(f"❌ Ошибка API Bybit для {symbol}: {error_msg}")
                     else:
-                        logger.error(f"HTTP ошибка {response.status} для {url}")
+                        logger.error(f"❌ HTTP ошибка {response.status} для {base_url}")
 
             except asyncio.TimeoutError:
-                logger.error(f"Таймаут при запросе к {base_url}")
+                self.error_count += 1
+                logger.error(f"⏱️ Таймаут при запросе к {base_url} для {symbol}")
             except Exception as e:
-                logger.error(f"Ошибка при запросе к {base_url}: {e}")
+                self.error_count += 1
+                logger.error(f"❌ Ошибка при запросе к {base_url}: {e}")
 
             # Небольшая задержка перед следующей попыткой
             await asyncio.sleep(1)
 
         # Если все попытки неудачны, возвращаем тестовые данные для отладки
-        logger.warning(f"Использую тестовые данные для {symbol}")
+        logger.warning(f"⚠️ Использую тестовые данные для {symbol} (ошибок: {self.error_count})")
         return self._get_mock_ticker(symbol)
 
+    @log_function_call()
     async def get_multiple_tickers(self, symbols: List[str]) -> Dict[str, Dict]:
         """
         Получает данные по нескольким тикерам одновременно.
@@ -123,6 +135,7 @@ class BybitClient:
             Dict[str, Dict]: Словарь, где ключ - символ, значение - данные тикера.
                             Возвращает только успешно полученные тикеры.
         """
+        logger.info(f"📊 Запрос данных для {len(symbols)} тикеров")
         results = {}
 
         # Создаем задачи для параллельных запросов
@@ -133,15 +146,17 @@ class BybitClient:
         # Выполняем запросы параллельно
         tickers = await asyncio.gather(*tasks, return_exceptions=True)
 
+        success_count = 0
         for symbol, ticker in zip(symbols, tickers):
             if isinstance(ticker, dict) and ticker:
                 results[symbol] = ticker
+                success_count += 1
             elif isinstance(ticker, Exception):
-                logger.error(f"Ошибка при получении {symbol}: {ticker}")
+                logger.error(f"❌ Ошибка при получении {symbol}: {ticker}")
             else:
-                logger.error(f"Не удалось получить данные для {symbol}")
+                logger.error(f"❌ Не удалось получить данные для {symbol}")
 
-        logger.info(f"Получено {len(results)} из {len(symbols)} тикеров")
+        logger.info(f"✅ Получено {success_count} из {len(symbols)} тикеров")
         return results
 
     def _get_mock_ticker(self, symbol: str) -> Dict:
@@ -155,6 +170,8 @@ class BybitClient:
             Dict: Тестовые данные тикера
         """
         import random
+
+        logger.debug(f"🎲 Генерация тестовых данных для {symbol}")
 
         # Базовые цены для популярных криптовалют
         base_prices = {
@@ -196,4 +213,8 @@ class BybitClient:
         """
         if self.session and not self.session.closed:
             await self.session.close()
-            logger.info("Сессия Bybit закрыта")
+            logger.info(f"🔌 Сессия Bybit закрыта. Всего запросов: {self.request_count}, ошибок: {self.error_count}")
+
+
+# Создаем глобальный экземпляр для использования в других модулях
+bybit_client = BybitClient()
