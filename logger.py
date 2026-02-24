@@ -1,18 +1,129 @@
 import logging
 import sys
+import os
+import time
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from datetime import datetime
-import os
+from typing import Dict, Optional
+from functools import wraps
+import asyncio
 
-# Создаем директорию для логов если её нет
+from constants import LOG_DETAILED_FORMAT, LOG_SIMPLE_FORMAT, LOG_DATE_FORMAT, LOG_SEPARATOR
+
+# Создаем директорию для логов
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
-# Форматы логов
-DETAILED_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
-SIMPLE_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+
+class WindowsSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
+    """
+    Наследник TimedRotatingFileHandler с безопасной ротацией на Windows.
+    Решает проблему PermissionError при попытке переименовать открытый файл.
+    """
+
+    def __init__(self, filename, when='midnight', interval=1, backupCount=30,
+                 encoding=None, delay=False, utc=False, atTime=None):
+        # Убеждаемся, что директория существует
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        super().__init__(filename, when, interval, backupCount, encoding, delay, utc, atTime)
+
+    def doRollover(self):
+        """
+        Переопределяем метод ротации для безопасной работы на Windows.
+        """
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+
+        # Получаем время для нового имени файла
+        current_time = int(time.time())
+        dst_time = self.rolloverAt - self.interval
+
+        # Формируем имя для архива
+        if self.when == 'midnight' or self.when.startswith('D'):
+            dfn = self.baseFilename + "." + time.strftime("%Y-%m-%d", time.localtime(dst_time))
+        else:
+            dfn = self.baseFilename + "." + time.strftime(self.suffix, time.localtime(dst_time))
+
+        # Пытаемся переименовать текущий файл
+        try:
+            if os.path.exists(self.baseFilename):
+                # Если архив уже существует - удаляем
+                if os.path.exists(dfn):
+                    try:
+                        os.remove(dfn)
+                    except OSError:
+                        # Если не можем удалить, пробуем другое имя с timestamp
+                        dfn = self.baseFilename + "." + time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(dst_time))
+
+                # Пытаемся переименовать
+                try:
+                    os.rename(self.baseFilename, dfn)
+                except OSError as e:
+                    # Если не получается переименовать, копируем содержимое
+                    self._safe_copy_log(self.baseFilename, dfn)
+
+        except Exception as e:
+            # Логируем ошибку, но не прерываем работу
+            print(f"Ошибка при ротации логов: {e}", file=sys.stderr)
+
+        # Открываем новый файл
+        if not self.delay:
+            self.stream = self._open()
+
+        # Вычисляем следующее время ротации
+        self.rolloverAt = self.rolloverAt + self.interval
+
+        # Удаляем старые файлы
+        if self.backupCount > 0:
+            self._delete_old_logs()
+
+    def _safe_copy_log(self, source, destination):
+        """
+        Безопасно копирует содержимое лог-файла при невозможности переименования.
+        """
+        try:
+            # Читаем содержимое исходного файла
+            with open(source, 'r', encoding='utf-8') as src:
+                content = src.read()
+
+            # Записываем в новый файл
+            with open(destination, 'w', encoding='utf-8') as dst:
+                dst.write(content)
+
+            # Очищаем исходный файл
+            with open(source, 'w', encoding='utf-8') as src:
+                src.truncate(0)
+
+        except Exception as e:
+            print(f"Ошибка при копировании лога: {e}", file=sys.stderr)
+
+    def _delete_old_logs(self):
+        """
+        Удаляет старые лог-файлы, превышающие backupCount.
+        """
+        try:
+            dir_name, base_name = os.path.split(self.baseFilename)
+            pattern = base_name + ".*"
+
+            files = []
+            for file in Path(dir_name).glob(pattern):
+                files.append((file.stat().st_mtime, file))
+
+            # Сортируем по времени модификации
+            files.sort()
+
+            # Удаляем самые старые
+            while len(files) > self.backupCount:
+                _, oldest = files.pop(0)
+                try:
+                    oldest.unlink()
+                except OSError:
+                    pass  # Игнорируем ошибки при удалении
+
+        except Exception:
+            pass  # Игнорируем ошибки при удалении
 
 
 class CustomLogger:
@@ -27,93 +138,75 @@ class CustomLogger:
     - Разные уровни логирования для разных модулей
     """
 
-    def __init__(self, name: str = None):
+    def __init__(self, name: Optional[str] = None):
         """
         Инициализация логгера.
 
         Args:
-            name (str): Имя логгера (обычно __name__)
+            name: Имя логгера
         """
         self.logger = logging.getLogger(name)
         self._configure()
 
     def _configure(self):
-        """Базовая настройка логгера"""
-        # Предотвращаем добавление нескольких обработчиков
+        """Базовая настройка логгера."""
         if self.logger.handlers:
             return
 
         self.logger.setLevel(logging.DEBUG)
 
-        # Создаем обработчики
         self._add_file_handler()
         self._add_console_handler()
 
     def _add_file_handler(self):
-        """Добавляет файловый обработчик с ежедневной ротацией"""
-        # Создаем обработчик с ротацией раз в день
-        file_handler = TimedRotatingFileHandler(
-            LOG_DIR / "bot.log",
-            when="midnight",  # Ротация в полночь
-            interval=1,  # Каждый день
-            backupCount=30,  # Хранить логи за последние 30 дней
-            encoding='utf-8',
-            utc=False  # Использовать локальное время
-        )
+        """Добавляет файловый обработчик с безопасной ротацией для Windows."""
+        try:
+            file_handler = WindowsSafeTimedRotatingFileHandler(
+                LOG_DIR / "bot.log",
+                when="midnight",
+                interval=1,
+                backupCount=30,
+                encoding='utf-8',
+                delay=False  # Важно: сразу открываем файл
+            )
 
-        # Настройка формата имени для ротированных файлов
-        # bot.log -> bot.log.2026-02-24
-        file_handler.suffix = "%Y-%m-%d"
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(logging.Formatter(
+                LOG_DETAILED_FORMAT,
+                datefmt=LOG_DATE_FORMAT
+            ))
 
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(logging.Formatter(
-            DETAILED_FORMAT,
-            datefmt=DATE_FORMAT
-        ))
+            self.logger.addHandler(file_handler)
 
-        # Добавляем фильтр для записи даты ротации
-        file_handler.addFilter(self._add_rotation_marker)
-
-        self.logger.addHandler(file_handler)
+        except Exception as e:
+            # Если не удалось создать файловый обработчик, логируем в консоль
+            print(f"⚠️ Не удалось создать файловый обработчик логов: {e}", file=sys.stderr)
 
     def _add_console_handler(self):
-        """Добавляет консольный обработчик"""
+        """Добавляет консольный обработчик."""
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(logging.Formatter(
-            SIMPLE_FORMAT,
-            datefmt=DATE_FORMAT
+            LOG_SIMPLE_FORMAT,
+            datefmt=LOG_DATE_FORMAT
         ))
         self.logger.addHandler(console_handler)
 
-    @staticmethod
-    def _add_rotation_marker(record):
-        """Добавляет маркер при ротации логов"""
-        # Проверяем, есть ли уже атрибут rotation_marker
-        if not hasattr(record, 'rotation_marker'):
-            # Если файл только что создан (размер 0), добавляем маркер
-            log_file = LOG_DIR / "bot.log"
-            if log_file.exists() and log_file.stat().st_size == 0:
-                record.rotation_marker = True
-            else:
-                record.rotation_marker = False
-        return True
-
     def get_logger(self):
-        """Возвращает настроенный логгер"""
+        """Возвращает настроенный логгер."""
         return self.logger
 
 
-# Словарь для хранения созданных логгеров
-_loggers = {}
+# Кэш для созданных логгеров
+_loggers: Dict[str, logging.Logger] = {}
 
 
-def get_logger(name: str = None) -> logging.Logger:
+def get_logger(name: Optional[str] = None) -> logging.Logger:
     """
     Фабричная функция для получения настроенного логгера.
 
     Args:
-        name (str): Имя модуля (обычно __name__)
+        name: Имя модуля
 
     Returns:
         logging.Logger: Настроенный логгер
@@ -124,25 +217,20 @@ def get_logger(name: str = None) -> logging.Logger:
 
 
 def log_rotation_info():
-    """
-    Записывает информацию о ротации логов при запуске бота.
-    Вызывается при каждом запуске для отметки в лог-файле.
-    """
+    """Записывает информацию о ротации логов при запуске."""
     logger = get_logger('system')
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    current_time = datetime.now().strftime(LOG_DATE_FORMAT)
 
-    # Красивое разделение между сессиями
-    separator = "=" * 80
-
-    logger.info(separator)
+    logger.info(LOG_SEPARATOR)
     logger.info(f"🚀 ЗАПУСК БОТА - {current_time}")
     logger.info(f"📁 Лог-файл: bot.log (ежедневная ротация в полночь)")
     logger.info(f"📊 Хранение логов: 30 дней")
-    logger.info(separator)
+    logger.info(f"💻 Платформа: {sys.platform}")
+    logger.info(LOG_SEPARATOR)
 
 
 def setup_module_loggers():
-    """Настройка логгеров для основных модулей с разными уровнями"""
+    """Настройка логгеров для основных модулей с разными уровнями."""
 
     # Логгер для bybit_client - больше деталей
     bybit_logger = get_logger('bybit_client')
@@ -164,17 +252,19 @@ def setup_module_loggers():
     system_logger = get_logger('system')
     system_logger.setLevel(logging.INFO)
 
-    # Записываем информацию о запуске
+    # Логгер для проверки уведомлений
+    checker_logger = get_logger('alerts_checker')
+    checker_logger.setLevel(logging.INFO)
+
     log_rotation_info()
 
 
 def cleanup_old_logs(days: int = 30):
     """
     Дополнительная очистка старых логов.
-    Может быть вызвана при необходимости.
 
     Args:
-        days (int): Удалять логи старше указанного количества дней
+        days: Удалять логи старше указанного количества дней
     """
     import time
 
@@ -183,9 +273,7 @@ def cleanup_old_logs(days: int = 30):
     deleted_count = 0
 
     for log_file in LOG_DIR.glob("bot.log.*"):
-        # Получаем время модификации файла
         file_time = log_file.stat().st_mtime
-        # Если файл старше days дней
         if current_time - file_time > days * 24 * 3600:
             try:
                 log_file.unlink()
@@ -198,7 +286,6 @@ def cleanup_old_logs(days: int = 30):
         logger.info(f"✅ Удалено {deleted_count} старых лог-файлов")
 
 
-# Декоратор для логирования функций
 def log_function_call(logger=None):
     """
     Декоратор для автоматического логирования вызовов функций.
@@ -209,8 +296,6 @@ def log_function_call(logger=None):
     Returns:
         function: Декорированная функция
     """
-    import asyncio
-    from functools import wraps
 
     def decorator(func):
         nonlocal logger
@@ -244,9 +329,8 @@ def log_function_call(logger=None):
     return decorator
 
 
-# Контекстный менеджер для временного изменения уровня логирования
 class LogLevelContext:
-    """Контекстный менеджер для временного изменения уровня логирования"""
+    """Контекстный менеджер для временного изменения уровня логирования."""
 
     def __init__(self, logger, level):
         self.logger = logger
@@ -262,8 +346,7 @@ class LogLevelContext:
         self.logger.setLevel(self.old_level)
 
 
-# Функция для получения статистики по логам
-def get_log_stats():
+def get_log_stats() -> Dict:
     """
     Возвращает статистику по лог-файлам.
 
@@ -278,21 +361,27 @@ def get_log_stats():
 
     current_log = LOG_DIR / "bot.log"
     if current_log.exists():
-        stats['current_log_size'] = current_log.stat().st_size
-        stats['files'].append({
-            'name': 'bot.log',
-            'size': current_log.stat().st_size,
-            'modified': datetime.fromtimestamp(current_log.stat().st_mtime).strftime(DATE_FORMAT)
-        })
+        try:
+            stats['current_log_size'] = current_log.stat().st_size
+            stats['files'].append({
+                'name': 'bot.log',
+                'size': current_log.stat().st_size,
+                'modified': datetime.fromtimestamp(current_log.stat().st_mtime).strftime(LOG_DATE_FORMAT)
+            })
+        except OSError:
+            pass
 
     for log_file in sorted(LOG_DIR.glob("bot.log.*")):
-        file_size = log_file.stat().st_size
-        stats['total_size'] += file_size
-        stats['files'].append({
-            'name': log_file.name,
-            'size': file_size,
-            'modified': datetime.fromtimestamp(log_file.stat().st_mtime).strftime(DATE_FORMAT)
-        })
+        try:
+            file_size = log_file.stat().st_size
+            stats['total_size'] += file_size
+            stats['files'].append({
+                'name': log_file.name,
+                'size': file_size,
+                'modified': datetime.fromtimestamp(log_file.stat().st_mtime).strftime(LOG_DATE_FORMAT)
+            })
+        except OSError:
+            pass
 
     stats['total_size_mb'] = stats['total_size'] / (1024 * 1024)
 

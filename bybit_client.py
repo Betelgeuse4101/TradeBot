@@ -1,10 +1,11 @@
 import aiohttp
 import asyncio
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
+from datetime import datetime, timedelta
+from decimal import Decimal
 from logger import get_logger, log_function_call
-
-# Получаем логгер для bybit_client
-logger = get_logger('bybit_client')
+from constants import BYBIT_API_URLS, BYBIT_API_TIMEOUT, BYBIT_SPOT_CATEGORY
+from utils import to_decimal
 
 
 class BybitClient:
@@ -15,206 +16,305 @@ class BybitClient:
     - Цены отдельных криптовалют
     - Множественные цены
     - Детальная информация по тикерам
-
-    Attributes:
-        session (aiohttp.ClientSession): HTTP сессия для запросов
-        base_url (str): Базовый URL API Bybit
+    - Корректное отображение объема (в USDT)
     """
 
-    def __init__(self):
+    def __init__(self, cache_ttl: int = 30):
         """
         Инициализирует клиента Bybit.
 
-        Устанавливает базовый URL API и создает сессию при первом запросе.
+        Args:
+            cache_ttl: Время жизни кэша в секундах
         """
-        self.session = None
-        self.base_url = "https://api.bybit.com"
-        # Альтернативные URL на случай проблем с основным
-        self.alternative_urls = [
-            "https://api.bybit.com",
-            "https://api.bytick.com",
-            "https://api-demo.bybit.com"
-        ]
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.base_urls = BYBIT_API_URLS
         self.current_url_index = 0
         self.request_count = 0
         self.error_count = 0
-        logger.debug("🔧 Инициализация Bybit клиента")
+        self.cache_ttl = cache_ttl
+        self.cache: Dict[str, tuple[Dict, datetime]] = {}
 
-    async def _get_session(self):
-        """Создает или возвращает существующую сессию"""
+        self.logger = get_logger('bybit_client')
+        self.logger.debug("🔧 Инициализация Bybit клиента")
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """
+        Создает или возвращает существующую сессию.
+
+        Returns:
+            aiohttp.ClientSession: HTTP сессия
+        """
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
-            logger.debug("🔌 Создана новая HTTP сессия")
+            self.logger.debug("🔌 Создана новая HTTP сессия")
         return self.session
 
+    def _get_from_cache(self, key: str) -> Optional[Dict]:
+        """
+        Получает данные из кэша.
+
+        Args:
+            key: Ключ кэша
+
+        Returns:
+            Optional[Dict]: Данные из кэша или None
+        """
+        if key in self.cache:
+            data, timestamp = self.cache[key]
+            if (datetime.now() - timestamp).seconds < self.cache_ttl:
+                return data
+            else:
+                del self.cache[key]
+        return None
+
+    def _add_to_cache(self, key: str, data: Dict):
+        """
+        Добавляет данные в кэш.
+
+        Args:
+            key: Ключ кэша
+            data: Данные для кэширования
+        """
+        self.cache[key] = (data, datetime.now())
+
+    def _parse_ticker_data(self, ticker: Dict, symbol: str) -> Dict:
+        """
+        Парсит данные тикера и преобразует числовые значения в Decimal.
+        Специальная обработка для объема (конвертация в USDT).
+
+        Args:
+            ticker: Сырые данные тикера
+            symbol: Торговый символ
+
+        Returns:
+            Dict: Данные с Decimal значениями и корректным объемом
+        """
+        result = {}
+
+        # Получаем цену для конвертации объема
+        last_price = to_decimal(ticker.get('lastPrice', '0'))
+
+        for key, value in ticker.items():
+            if key in ['lastPrice', 'highPrice24h', 'lowPrice24h', 'prevPrice24h']:
+                result[key] = to_decimal(value)
+            elif key == 'volume24h':
+                # Объем в количестве монет
+                volume_coins = to_decimal(value)
+                result['volume_coins'] = volume_coins
+
+                # Конвертируем в USDT (цена * количество монет)
+                if last_price and volume_coins:
+                    result['volume_usdt'] = volume_coins * last_price
+                else:
+                    result['volume_usdt'] = Decimal('0')
+
+                # Для обратной совместимости
+                result[key] = volume_coins
+
+            elif key == 'price24hPcnt':
+                result[key] = to_decimal(value)
+            else:
+                result[key] = value
+
+        # Логируем реальные данные
+        self.logger.info(
+            f"📊 РЕАЛЬНЫЕ ДАННЫЕ {symbol}: "
+            f"цена=${last_price}, "
+            f"объем={result.get('volume_coins'):,.0f} монет, "
+            f"объем=${result.get('volume_usdt'):,.0f} USDT"
+        )
+
+        return result
+
+    def _validate_ticker_response(self, data: Dict, symbol: str) -> Optional[Dict]:
+        """
+        Валидирует ответ от API.
+
+        Args:
+            data: Данные от API
+            symbol: Запрашиваемый символ
+
+        Returns:
+            Optional[Dict]: Валидные данные или None
+        """
+        if data.get("retCode") != 0:
+            self.logger.error(f"❌ Ошибка API: {data.get('retMsg', 'Unknown error')}")
+            return None
+
+        result = data.get("result", {})
+        ticker_list = result.get("list", [])
+
+        if not ticker_list:
+            self.logger.warning(f"⚠️ Пустой список тикеров для {symbol}")
+            return None
+
+        return self._parse_ticker_data(ticker_list[0], symbol)
+
+    async def _make_request_with_retry(self, url: str, params: Dict,
+                                       max_retries: int = 3) -> Optional[Dict]:
+        """
+        Выполняет HTTP запрос с повторными попытками.
+
+        Args:
+            url: URL для запроса
+            params: Параметры запроса
+            max_retries: Максимальное количество попыток
+
+        Returns:
+            Optional[Dict]: Ответ от API или None
+        """
+        session = await self._get_session()
+
+        for attempt in range(max_retries):
+            try:
+                async with session.get(url, params=params,
+                                       timeout=BYBIT_API_TIMEOUT) as response:
+                    if response.status == 200:
+                        return await response.json()
+                    else:
+                        self.logger.error(f"❌ HTTP ошибка {response.status}, попытка {attempt + 1}")
+
+            except asyncio.TimeoutError:
+                self.logger.error(f"⏱️ Таймаут, попытка {attempt + 1}")
+            except Exception as e:
+                self.logger.error(f"❌ Ошибка запроса: {e}, попытка {attempt + 1}")
+
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+
+        return None
+
     @log_function_call()
-    async def get_ticker(self, symbol: str) -> Optional[Dict]:
+    async def get_ticker(self, symbol: str, use_cache: bool = True) -> Optional[Dict]:
         """
         Получает данные по тикеру для указанного символа.
 
-        Выполняет запрос к Bybit API для получения информации о текущей цене,
-        изменении за 24 часа, объеме и других метриках.
-
         Args:
-            symbol (str): Торговый символ (например, "BTCUSDT")
+            symbol: Торговый символ (например, "BTCUSDT")
+            use_cache: Использовать кэш
 
         Returns:
-            Optional[Dict]: Словарь с данными тикера или None при ошибке.
-                           Содержит поля: lastPrice, price24hPcnt,
-                           highPrice24h, lowPrice24h, volume24h и др.
+            Optional[Dict]: Данные тикера или None
         """
         self.request_count += 1
-        logger.debug(f"📡 Запрос #{self.request_count} для {symbol}")
+        self.logger.debug(f"📡 Запрос #{self.request_count} для {symbol}")
 
-        # Пробуем разные URL если основной не работает
-        for attempt in range(len(self.alternative_urls)):
-            try:
-                url_index = (self.current_url_index + attempt) % len(self.alternative_urls)
-                base_url = self.alternative_urls[url_index]
+        # Проверяем кэш
+        if use_cache:
+            cached = self._get_from_cache(symbol)
+            if cached:
+                self.logger.debug(f"✅ Данные для {symbol} получены из кэша")
+                return cached
 
-                # Правильный эндпоинт для Bybit v5 API
-                url = f"{base_url}/v5/market/tickers"
-                params = {
-                    "category": "spot",
-                    "symbol": symbol
-                }
+        # Пробуем разные URL
+        for attempt in range(len(self.base_urls)):
+            url_index = (self.current_url_index + attempt) % len(self.base_urls)
+            base_url = self.base_urls[url_index]
 
-                session = await self._get_session()
+            url = f"{base_url}/v5/market/tickers"
+            params = {
+                "category": BYBIT_SPOT_CATEGORY,
+                "symbol": symbol
+            }
 
-                logger.debug(f"Запрос к {base_url} для {symbol}")
+            self.logger.debug(f"Запрос к {base_url} для {symbol}")
 
-                async with session.get(url, params=params, timeout=10) as response:
-                    if response.status == 200:
-                        data = await response.json()
+            response = await self._make_request_with_retry(url, params)
 
-                        # Проверяем структуру ответа
-                        if data.get("retCode") == 0:
-                            result = data.get("result", {})
-                            ticker_list = result.get("list", [])
-                            if ticker_list and len(ticker_list) > 0:
-                                ticker_data = ticker_list[0]
-                                # Успешный запрос, запоминаем рабочий URL
-                                self.current_url_index = url_index
-                                price = float(ticker_data.get('lastPrice', 0))
-                                logger.debug(f"✅ {symbol}: ${price:.4f}")
-                                return ticker_data
-                            else:
-                                logger.warning(f"⚠️ Пустой список тикеров для {symbol}")
-                        else:
-                            error_msg = data.get('retMsg', 'Unknown error')
-                            logger.error(f"❌ Ошибка API Bybit для {symbol}: {error_msg}")
-                    else:
-                        logger.error(f"❌ HTTP ошибка {response.status} для {base_url}")
+            if response:
+                ticker_data = self._validate_ticker_response(response, symbol)
+                if ticker_data:
+                    # Успешный запрос, запоминаем рабочий URL
+                    self.current_url_index = url_index
 
-            except asyncio.TimeoutError:
-                self.error_count += 1
-                logger.error(f"⏱️ Таймаут при запросе к {base_url} для {symbol}")
-            except Exception as e:
-                self.error_count += 1
-                logger.error(f"❌ Ошибка при запросе к {base_url}: {e}")
+                    # Сохраняем в кэш
+                    self._add_to_cache(symbol, ticker_data)
 
-            # Небольшая задержка перед следующей попыткой
+                    return ticker_data
+
             await asyncio.sleep(1)
 
-        # Если все попытки неудачны, возвращаем тестовые данные для отладки
-        logger.warning(f"⚠️ Использую тестовые данные для {symbol} (ошибок: {self.error_count})")
-        return self._get_mock_ticker(symbol)
+        # Если все попытки неудачны - ВОЗВРАЩАЕМ None, а не случайные данные!
+        self.error_count += 1
+        self.logger.error(f"❌ НЕ УДАЛОСЬ ПОЛУЧИТЬ ДАННЫЕ для {symbol} после всех попыток")
+        return None
 
     @log_function_call()
-    async def get_multiple_tickers(self, symbols: List[str]) -> Dict[str, Dict]:
+    async def get_multiple_tickers(self, symbols: List[str],
+                                   use_cache: bool = True) -> Dict[str, Dict]:
         """
         Получает данные по нескольким тикерам одновременно.
 
-        Выполняет последовательные запросы для каждого символа
-        с небольшой задержкой между ними.
-
         Args:
-            symbols (List[str]): Список торговых символов
+            symbols: Список торговых символов
+            use_cache: Использовать кэш
 
         Returns:
-            Dict[str, Dict]: Словарь, где ключ - символ, значение - данные тикера.
-                            Возвращает только успешно полученные тикеры.
+            Dict[str, Dict]: Словарь {символ: данные тикера}
         """
-        logger.info(f"📊 Запрос данных для {len(symbols)} тикеров")
+        self.logger.info(f"📊 Запрос данных для {len(symbols)} тикеров")
         results = {}
 
-        # Создаем задачи для параллельных запросов
-        tasks = []
-        for symbol in symbols:
-            tasks.append(self.get_ticker(symbol))
+        # Фильтруем символы, которые можно получить из кэша
+        symbols_to_fetch = []
+        if use_cache:
+            for symbol in symbols:
+                cached = self._get_from_cache(symbol)
+                if cached:
+                    results[symbol] = cached
+                else:
+                    symbols_to_fetch.append(symbol)
+        else:
+            symbols_to_fetch = symbols
 
-        # Выполняем запросы параллельно
-        tickers = await asyncio.gather(*tasks, return_exceptions=True)
+        if symbols_to_fetch:
+            # Создаем задачи для параллельных запросов
+            tasks = [self.get_ticker(symbol, use_cache=False) for symbol in symbols_to_fetch]
+            tickers = await asyncio.gather(*tasks, return_exceptions=True)
 
-        success_count = 0
-        for symbol, ticker in zip(symbols, tickers):
-            if isinstance(ticker, dict) and ticker:
-                results[symbol] = ticker
-                success_count += 1
-            elif isinstance(ticker, Exception):
-                logger.error(f"❌ Ошибка при получении {symbol}: {ticker}")
-            else:
-                logger.error(f"❌ Не удалось получить данные для {symbol}")
+            for symbol, ticker in zip(symbols_to_fetch, tickers):
+                if isinstance(ticker, dict) and ticker:
+                    results[symbol] = ticker
+                elif isinstance(ticker, Exception):
+                    self.logger.error(f"❌ Ошибка при получении {symbol}: {ticker}")
+                else:
+                    self.logger.error(f"❌ Не удалось получить данные для {symbol}")
 
-        logger.info(f"✅ Получено {success_count} из {len(symbols)} тикеров")
+        self.logger.info(f"✅ Получено {len(results)} из {len(symbols)} тикеров")
         return results
 
-    def _get_mock_ticker(self, symbol: str) -> Dict:
-        """
-        Возвращает тестовые данные для отладки, когда API недоступен.
+    # УДАЛЯЕМ метод _get_mock_ticker() полностью!
 
-        Args:
-            symbol (str): Торговый символ
+    async def get_stats(self) -> Dict[str, Any]:
+        """
+        Возвращает статистику работы клиента.
 
         Returns:
-            Dict: Тестовые данные тикера
+            Dict: Статистика
         """
-        import random
-
-        logger.debug(f"🎲 Генерация тестовых данных для {symbol}")
-
-        # Базовые цены для популярных криптовалют
-        base_prices = {
-            "BTCUSDT": 50000.0,
-            "ETHUSDT": 3000.0,
-            "SOLUSDT": 100.0,
-            "BNBUSDT": 400.0,
-            "XRPUSDT": 0.5,
-            "ADAUSDT": 0.4,
-            "DOGEUSDT": 0.08,
-            "DOTUSDT": 7.0,
-            "LINKUSDT": 15.0
-        }
-
-        base_price = base_prices.get(symbol, 100.0)
-
-        # Генерируем случайные колебания
-        price = base_price * (1 + (random.random() - 0.5) * 0.1)
-        change = (random.random() - 0.5) * 10
+        success_rate = 0
+        if self.request_count > 0:
+            success_rate = (self.request_count - self.error_count) / self.request_count * 100
 
         return {
-            "symbol": symbol,
-            "lastPrice": str(price),
-            "price24hPcnt": str(change / 100),
-            "highPrice24h": str(price * 1.05),
-            "lowPrice24h": str(price * 0.95),
-            "volume24h": str(price * 1000000),
-            "prevPrice24h": str(price / (1 + change / 100))
+            'total_requests': self.request_count,
+            'error_count': self.error_count,
+            'success_rate': round(success_rate, 2),
+            'cache_size': len(self.cache),
+            'current_url': self.base_urls[self.current_url_index]
         }
 
     async def close(self):
         """
         Закрывает HTTP сессию.
-
-        Должен быть вызван при завершении работы для освобождения ресурсов.
-
-        Returns:
-            None
         """
         if self.session and not self.session.closed:
             await self.session.close()
-            logger.info(f"🔌 Сессия Bybit закрыта. Всего запросов: {self.request_count}, ошибок: {self.error_count}")
+            self.logger.info(
+                f"🔌 Сессия Bybit закрыта. "
+                f"Всего запросов: {self.request_count}, ошибок: {self.error_count}"
+            )
 
 
-# Создаем глобальный экземпляр для использования в других модулях
+# Создаем глобальный экземпляр
 bybit_client = BybitClient()

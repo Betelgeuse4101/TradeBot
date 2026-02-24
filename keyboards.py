@@ -106,18 +106,12 @@ class Keyboards:
             InlineKeyboardMarkup: Клавиатура с кнопками:
                 - Подробная информация
                 - Установка уведомления
-                - График
-                - Добавление в избранное
                 - Назад к списку
         """
         return InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="📊 Подробно", callback_data=f"detail_{symbol}"),
                 InlineKeyboardButton(text="🔔 Уведомить", callback_data=f"alert_{symbol}")
-            ],
-            [
-                InlineKeyboardButton(text="📈 График", callback_data=f"chart_{symbol}"),
-                InlineKeyboardButton(text="💾 Избранное", callback_data=f"fav_{symbol}")
             ],
             [
                 InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_crypto")
