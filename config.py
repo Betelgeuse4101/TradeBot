@@ -1,4 +1,6 @@
 import os
+import json
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -7,16 +9,6 @@ load_dotenv()
 class Config:
     """
     Класс конфигурации приложения.
-
-    Загружает настройки из переменных окружения (.env файла)
-    и предоставляет их для использования в других модулях.
-
-    Attributes:
-        BOT_TOKEN (str): Токен Telegram бота из переменных окружения
-        ALERT_INTERVAL (int): Интервал проверки уведомлений в секундах
-        POPULAR_CRYPTO (dict): Словарь популярных криптовалют
-                               {название: торговый символ}
-        DEFAULT_PAIRS (list): Список торговых символов для отображения по умолчанию
     """
 
     # Telegram Bot Token
@@ -28,7 +20,7 @@ class Config:
     # Настройки
     ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", 30))
 
-    # Популярные криптовалюты
+    # Популярные криптовалюты (базовый набор)
     POPULAR_CRYPTO = {
         "BTC": "BTCUSDT",
         "ETH": "ETHUSDT",
@@ -41,5 +33,8 @@ class Config:
         "LINK": "LINKUSDT"
     }
 
-    # Основные пары для отображения
+    # Основные пары для отображения по умолчанию
     DEFAULT_PAIRS = list(POPULAR_CRYPTO.values())
+
+    # Путь к файлу с пользовательскими монетами
+    USER_COINS_FILE = Path("user_coins.json")
