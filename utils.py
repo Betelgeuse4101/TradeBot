@@ -1,10 +1,9 @@
 from typing import Union, Dict, Optional
 from datetime import datetime
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, getcontext
+from decimal import Decimal, InvalidOperation, getcontext
 from config import Config
 from constants import DECIMAL_PRECISION, DECIMAL_CONTEXT
 
-# Настройка контекста Decimal
 getcontext().prec = DECIMAL_CONTEXT['prec']
 getcontext().rounding = DECIMAL_CONTEXT['rounding']
 
@@ -26,9 +25,6 @@ def to_decimal(value: Union[str, int, float, Decimal, None]) -> Optional[Decimal
         return value
 
     try:
-        if isinstance(value, float):
-            # Преобразуем float через строку для точности
-            return Decimal(str(value))
         return Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         return None
@@ -50,7 +46,6 @@ def format_decimal(value: Union[Decimal, str, int, float, None],
     if dec_value is None:
         return "N/A"
 
-    # Нормализуем и форматируем
     normalized = dec_value.normalize()
 
     if places > 0:
@@ -73,7 +68,7 @@ def format_price(price: Union[Decimal, str, int, float, None]) -> str:
     Returns:
         str: Отформатированная цена
     """
-    return format_decimal(price, 8)
+    return format_decimal(price, 4)
 
 
 def format_volume(volume: Union[Decimal, str, int, float, None],
@@ -93,7 +88,6 @@ def format_volume(volume: Union[Decimal, str, int, float, None],
         return "N/A"
 
     if volume_type == "usdt":
-        # Для долларов форматируем с сокращениями
         if vol >= 1_000_000_000:  # Миллиарды
             return f"${vol / 1_000_000_000:.2f}B"
         elif vol >= 1_000_000:  # Миллионы
@@ -103,7 +97,6 @@ def format_volume(volume: Union[Decimal, str, int, float, None],
         else:
             return f"${vol:.2f}"
     else:
-        # Для монет - обычное форматирование
         if vol >= 1_000_000:
             return f"{vol / 1_000_000:.2f}M"
         elif vol >= 1_000:
@@ -282,7 +275,7 @@ def format_all_prices_message(tickers: Dict[str, Dict]) -> str:
             volume_usdt = volume_coins * price if volume_coins and price else Decimal('0')
 
         response += f"<b>{display_name}</b>\n"
-        response += f"   💰 ${format_price(price)} {change_icon} {change:+.4f}%\n"
+        response += f"   💰 ${format_price(price)} {change_icon} {change:+.2f}%\n"
         response += f"   📊 Объем: {format_volume(volume_usdt, 'usdt')}\n\n"
 
     return response

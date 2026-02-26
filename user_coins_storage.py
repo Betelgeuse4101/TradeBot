@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List, Optional, Set
+from typing import Dict, List
 from pathlib import Path
 from datetime import datetime
 from logger import get_logger, log_function_call
@@ -183,7 +183,6 @@ class UserCoinsStorage:
             List[str]: Список доступных для добавления монет
         """
         # Здесь можно добавить логику получения всех доступных монет с биржи
-        # Пока возвращаем популярные монеты, которых нет у пользователя
         popular_coins = list(Config.POPULAR_CRYPTO.values())
         user_coins = self.get_user_coins(user_id)
 

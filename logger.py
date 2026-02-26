@@ -36,8 +36,6 @@ class WindowsSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
             self.stream.close()
             self.stream = None
 
-        # Получаем время для нового имени файла
-        current_time = int(time.time())
         dst_time = self.rolloverAt - self.interval
 
         # Формируем имя для архива
@@ -129,13 +127,6 @@ class WindowsSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
 class CustomLogger:
     """
     Класс для централизованного управления логированием.
-
-    Позволяет:
-    - Настраивать форматирование логов
-    - Управлять выводом в файл и консоль
-    - Ежедневная ротация лог-файлов
-    - Хранение логов за последние 30 дней
-    - Разные уровни логирования для разных модулей
     """
 
     def __init__(self, name: Optional[str] = None):
@@ -232,19 +223,19 @@ def log_rotation_info():
 def setup_module_loggers():
     """Настройка логгеров для основных модулей с разными уровнями."""
 
-    # Логгер для bybit_client - больше деталей
+    # Логгер для bybit_client
     bybit_logger = get_logger('bybit_client')
     bybit_logger.setLevel(logging.DEBUG)
 
-    # Логгер для handlers - важные события
+    # Логгер для handlers
     handlers_logger = get_logger('handlers')
     handlers_logger.setLevel(logging.INFO)
 
-    # Логгер для alerts_storage - ошибки и предупреждения
+    # Логгер для alerts_storage
     alerts_logger = get_logger('alerts_storage')
     alerts_logger.setLevel(logging.WARNING)
 
-    # Логгер для main - только критическое
+    # Логгер для main
     main_logger = get_logger('main')
     main_logger.setLevel(logging.ERROR)
 
@@ -344,45 +335,3 @@ class LogLevelContext:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.logger.setLevel(self.old_level)
-
-
-def get_log_stats() -> Dict:
-    """
-    Возвращает статистику по лог-файлам.
-
-    Returns:
-        dict: Статистика по логам
-    """
-    stats = {
-        'total_size': 0,
-        'files': [],
-        'current_log_size': 0
-    }
-
-    current_log = LOG_DIR / "bot.log"
-    if current_log.exists():
-        try:
-            stats['current_log_size'] = current_log.stat().st_size
-            stats['files'].append({
-                'name': 'bot.log',
-                'size': current_log.stat().st_size,
-                'modified': datetime.fromtimestamp(current_log.stat().st_mtime).strftime(LOG_DATE_FORMAT)
-            })
-        except OSError:
-            pass
-
-    for log_file in sorted(LOG_DIR.glob("bot.log.*")):
-        try:
-            file_size = log_file.stat().st_size
-            stats['total_size'] += file_size
-            stats['files'].append({
-                'name': log_file.name,
-                'size': file_size,
-                'modified': datetime.fromtimestamp(log_file.stat().st_mtime).strftime(LOG_DATE_FORMAT)
-            })
-        except OSError:
-            pass
-
-    stats['total_size_mb'] = stats['total_size'] / (1024 * 1024)
-
-    return stats

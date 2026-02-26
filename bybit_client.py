@@ -1,7 +1,7 @@
 import aiohttp
 import asyncio
-from typing import Dict, List, Optional, Any
-from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+from datetime import datetime
 from decimal import Decimal
 from logger import get_logger, log_function_call
 from constants import BYBIT_API_URLS, BYBIT_API_TIMEOUT, BYBIT_SPOT_CATEGORY
@@ -12,11 +12,7 @@ class BybitClient:
     """
     Клиент для взаимодействия с API биржи Bybit.
 
-    Предоставляет методы для получения рыночных данных:
-    - Цены отдельных криптовалют
-    - Множественные цены
-    - Детальная информация по тикерам
-    - Корректное отображение объема (в USDT)
+    Предоставляет методы для получения рыночных данных.
     """
 
     def __init__(self, cache_ttl: int = 30):
@@ -234,7 +230,6 @@ class BybitClient:
 
             await asyncio.sleep(1)
 
-        # Если все попытки неудачны - ВОЗВРАЩАЕМ None, а не случайные данные!
         self.error_count += 1
         self.logger.error(f"❌ НЕ УДАЛОСЬ ПОЛУЧИТЬ ДАННЫЕ для {symbol} после всех попыток")
         return None
@@ -283,26 +278,6 @@ class BybitClient:
         self.logger.info(f"✅ Получено {len(results)} из {len(symbols)} тикеров")
         return results
 
-    # УДАЛЯЕМ метод _get_mock_ticker() полностью!
-
-    async def get_stats(self) -> Dict[str, Any]:
-        """
-        Возвращает статистику работы клиента.
-
-        Returns:
-            Dict: Статистика
-        """
-        success_rate = 0
-        if self.request_count > 0:
-            success_rate = (self.request_count - self.error_count) / self.request_count * 100
-
-        return {
-            'total_requests': self.request_count,
-            'error_count': self.error_count,
-            'success_rate': round(success_rate, 2),
-            'cache_size': len(self.cache),
-            'current_url': self.base_urls[self.current_url_index]
-        }
 
     async def close(self):
         """

@@ -1,11 +1,10 @@
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict
 from datetime import datetime
 from abc import ABC, abstractmethod
 from logger import get_logger
 from decimal import Decimal
-from utils import to_decimal
 
 
 class DecimalEncoder(json.JSONEncoder):

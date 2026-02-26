@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramBadRequest
 import asyncio
 from datetime import datetime
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict
 from decimal import Decimal
 
 from config import Config
@@ -17,11 +17,11 @@ from logger import get_logger, log_function_call
 from utils import (
     format_price_message, format_detail_message, format_alert_message,
     format_alert_notification, get_crypto_display_name, parse_price_input,
-    get_change_icon, format_price, to_decimal, format_popular_message,
+    format_price, format_popular_message,
     format_all_prices_message
 )
 from constants import (
-    ALERTS_FILE, QUICK_ALERT_PERCENTS, ALERT_DIRECTION_UP, ALERT_DIRECTION_DOWN,
+    ALERTS_FILE, ALERT_DIRECTION_UP, ALERT_DIRECTION_DOWN,
     DIRECTION_ICONS, WELCOME_MESSAGE, HELP_MESSAGE
 )
 

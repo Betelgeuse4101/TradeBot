@@ -1,6 +1,5 @@
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
-from decimal import Decimal
 from base_storage import BaseStorage
 from logger import log_function_call
 from utils import safe_iso_format, to_decimal
@@ -10,12 +9,6 @@ from constants import ALERT_DIRECTION_UP, ALERT_DIRECTION_DOWN
 class AlertsStorage(BaseStorage):
     """
     Класс для хранения и управления уведомлениями пользователей.
-
-    Обеспечивает:
-    - Сохранение уведомлений между перезапусками
-    - CRUD операции с уведомлениями
-    - Поиск по пользователям и символам
-    - Автоматическую очистку выполненных уведомлений
     """
 
     def __init__(self, storage_path: str = "alerts.json", auto_save: bool = True):

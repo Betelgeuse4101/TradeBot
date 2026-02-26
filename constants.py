@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List
 from decimal import Decimal
 
 # Константы для Bybit API
