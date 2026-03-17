@@ -6,34 +6,28 @@ load_dotenv()
 
 
 class Config:
-    """
-    Класс конфигурации приложения.
-    """
+    """Конфигурация приложения"""
 
-    # Telegram Bot Token
+    # Telegram
     BOT_TOKEN = os.getenv("BOT_TOKEN")
-
     if not BOT_TOKEN:
         raise ValueError("❌ BOT_TOKEN не найден в .env файле!")
 
-    # Настройки
-    ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", 30))
+    # Database
+    DB_HOST = os.getenv("DB_HOST", "localhost")
+    DB_PORT = int(os.getenv("DB_PORT", "5432"))
+    DB_NAME = os.getenv("DB_NAME", "crypto_bot")
+    DB_USER = os.getenv("DB_USER", "postgres")
+    DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
-    # Популярные криптовалюты (базовый набор)
-    POPULAR_CRYPTO = {
-        "BTC": "BTCUSDT",
-        "ETH": "ETHUSDT",
-        "SOL": "SOLUSDT",
-        "BNB": "BNBUSDT",
-        "XRP": "XRPUSDT",
-        "ADA": "ADAUSDT",
-        "DOGE": "DOGEUSDT",
-        "DOT": "DOTUSDT",
-        "LINK": "LINKUSDT"
-    }
+    # Settings
+    ALERT_CHECK_INTERVAL = int(os.getenv("ALERT_CHECK_INTERVAL", "60"))  # секунд
+    PRICE_CACHE_TTL = int(os.getenv("PRICE_CACHE_TTL", "300"))  # 5 минут для MOEX
+    MOEX_REQUEST_TIMEOUT = int(os.getenv("MOEX_REQUEST_TIMEOUT", "10"))
 
-    # Основные пары для отображения по умолчанию
-    DEFAULT_PAIRS = list(POPULAR_CRYPTO.values())
+    # MOEX API settings
+    MOEX_API_URL = "https://iss.moex.com/iss"
 
-    # Путь к файлу с пользовательскими монетами
-    USER_COINS_FILE = Path("user_coins.json")
+    # Paths
+    LOG_DIR = Path("logs")
+    LOG_DIR.mkdir(exist_ok=True)
