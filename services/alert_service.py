@@ -27,6 +27,9 @@ class AlertService:
         self.is_running = True
         logger.info("🚀 Запуск сервиса уведомлений")
 
+        # Запускаем периодическое обновление цен
+        asyncio.create_task(self._update_prices_periodically())
+
         while self.is_running:
             try:
                 await self.check_alerts()
@@ -34,6 +37,31 @@ class AlertService:
             except Exception as e:
                 logger.error(f"Ошибка в сервисе уведомлений: {e}")
                 await asyncio.sleep(60)
+
+    async def _update_prices_periodically(self):
+        """Периодическое обновление цен (каждые 4 часа)"""
+        while self.is_running:
+            try:
+                logger.info("🔄 Запуск периодического обновления цен")
+
+                # Получаем все активы из БД
+                assets = await AssetRepository.get_all_assets()
+
+                # Группируем по портфелям для эффективного обновления
+                portfolio_ids = set(a['portfolio_id'] for a in assets)
+
+                for portfolio_id in portfolio_ids:
+                    await price_service.update_portfolio_prices(portfolio_id)
+                    await asyncio.sleep(1)  # Небольшая пауза между портфелями
+
+                logger.info(f"✅ Периодическое обновление цен завершено, обновлено {len(portfolio_ids)} портфелей")
+
+                # Ждем 4 часа
+                await asyncio.sleep(4 * 60 * 60)
+
+            except Exception as e:
+                logger.error(f"Ошибка при периодическом обновлении цен: {e}")
+                await asyncio.sleep(60)  # При ошибке ждем минуту и пробуем снова
 
     async def stop(self):
         """Остановка сервиса"""

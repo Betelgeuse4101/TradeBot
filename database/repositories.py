@@ -77,6 +77,38 @@ class PortfolioRepository:
         return [dict(row) for row in rows]
 
     @staticmethod
+    async def update_name(portfolio_id: int, name: str) -> bool:
+        """Обновление названия портфеля"""
+        query = """
+        UPDATE portfolios 
+        SET name = $1, updated_at = CURRENT_TIMESTAMP 
+        WHERE id = $2
+        """
+        try:
+            await db.execute(query, name, portfolio_id)
+            logger.info(f"✏️ Название портфеля {portfolio_id} обновлено на '{name}'")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка обновления названия портфеля {portfolio_id}: {e}")
+            return False
+
+    @staticmethod
+    async def update_description(portfolio_id: int, description: str = None) -> bool:
+        """Обновление описания портфеля"""
+        query = """
+        UPDATE portfolios 
+        SET description = $1, updated_at = CURRENT_TIMESTAMP 
+        WHERE id = $2
+        """
+        try:
+            await db.execute(query, description, portfolio_id)
+            logger.info(f"✏️ Описание портфеля {portfolio_id} обновлено")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка обновления описания портфеля {portfolio_id}: {e}")
+            return False
+
+    @staticmethod
     async def get(portfolio_id: int) -> Optional[Dict]:
         """Получение портфеля по ID"""
         query = "SELECT * FROM portfolios WHERE id = $1"
@@ -146,6 +178,17 @@ class AssetRepository:
         ORDER BY symbol
         """
         rows = await db.fetch(query, portfolio_id)
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    async def get_all_assets() -> List[Dict]:
+        """Получение всех активов всех пользователей"""
+        query = """
+        SELECT a.*, p.user_id 
+        FROM assets a
+        JOIN portfolios p ON a.portfolio_id = p.id
+        """
+        rows = await db.fetch(query)
         return [dict(row) for row in rows]
 
     @staticmethod

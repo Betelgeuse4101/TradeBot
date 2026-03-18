@@ -3,7 +3,7 @@ import asyncio
 from typing import Dict, List, Optional, Any, Tuple
 from decimal import Decimal
 from datetime import datetime, timedelta
-import xml.etree.ElementTree as ET
+import json
 
 from config import Config
 from logger import get_logger
@@ -13,376 +13,552 @@ logger = get_logger('moex_client')
 
 
 class MOEXClient:
-    """Клиент для работы с API Московской биржи"""
+    """Клиент для работы с API Московской биржи (RESTful архитектура)"""
+
+    # Справочник соответствия типов активов движкам и рынкам
+    ENGINE_MARKET_MAP = {
+        'stock': ('stock', 'shares'),
+        'bond': ('stock', 'bonds'),
+        'etf': ('stock', 'etf'),
+        'currency': ('currency', 'selt'),
+        'futures': ('futures', 'forts'),
+        'index': ('stock', 'index'),
+    }
 
     def __init__(self):
         self.base_url = Config.MOEX_API_URL
         self.session: Optional[aiohttp.ClientSession] = None
-        self.cache = {}  # Кэш для запросов
+        self.cache = {}
+        self.info_cache = {}
         self.cache_ttl = Config.PRICE_CACHE_TTL
-        self._lock = asyncio.Lock()  # Блокировка для безопасного создания сессии
+        self._lock = asyncio.Lock()
+        self.last_known_prices = {}
+
+        self.request_count = 0
+        self.last_request_reset = datetime.now()
+        self.max_requests_per_minute = 60
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Получение HTTP сессии с блокировкой"""
+        """Получение или создание HTTP сессии"""
         async with self._lock:
             if self.session is None or self.session.closed:
-                # Создаем сессию с таймаутами
                 timeout = aiohttp.ClientTimeout(
                     total=Config.MOEX_REQUEST_TIMEOUT,
-                    connect=5,
-                    sock_read=Config.MOEX_REQUEST_TIMEOUT
+                    connect=15,
+                    sock_read=Config.MOEX_REQUEST_TIMEOUT - 5
                 )
-                connector = aiohttp.TCPConnector(ssl=False)  # Отключаем SSL для ускорения
+                connector = aiohttp.TCPConnector(
+                    ssl=False,
+                    limit=10,
+                    ttl_dns_cache=300,
+                    force_close=True
+                )
                 self.session = aiohttp.ClientSession(
                     timeout=timeout,
-                    connector=connector
+                    connector=connector,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'application/json',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive'
+                    }
                 )
-                logger.debug("Создана новая HTTP сессия для MOEX")
+                logger.info("✅ Создана новая HTTP сессия для MOEX")
         return self.session
 
+    async def _check_rate_limit(self):
+        """Проверка и соблюдение лимитов запросов"""
+        now = datetime.now()
+        if (now - self.last_request_reset).total_seconds() > 60:
+            self.request_count = 0
+            self.last_request_reset = now
+
+        self.request_count += 1
+
+        if self.request_count > self.max_requests_per_minute:
+            wait_time = 60 - (now - self.last_request_reset).total_seconds()
+            if wait_time > 0:
+                logger.warning(f"⚠️ Достигнут лимит запросов, ожидание {wait_time:.1f}с")
+                await asyncio.sleep(wait_time)
+                self.request_count = 0
+                self.last_request_reset = datetime.now()
+
     async def _make_request(self, url: str, params: Dict = None) -> Optional[Dict]:
-        """Выполнение запроса к API MOEX"""
-        try:
-            session = await self._get_session()
+        """Выполнение запроса к API MOEX с повторными попытками"""
+        max_retries = Config.MOEX_MAX_RETRIES
+        retry_delay = Config.MOEX_RETRY_DELAY
 
-            async with session.get(url, params=params) as response:
-                if response.status == 200:
-                    if 'json' in url or params and params.get('format') == 'json':
-                        return await response.json()
+        await self._check_rate_limit()
+
+        logger.info(f"🌐 ЗАПРОС К MOEX: {url}")
+        if params:
+            logger.info(f"📦 Параметры: {params}")
+
+        for attempt in range(max_retries):
+            try:
+                session = await self._get_session()
+
+                if params is None:
+                    params = {}
+
+                # Добавляем параметр для получения всех данных
+                if 'iss.only' not in params:
+                    params['iss.only'] = 'securities,marketdata'
+
+                # Явно запрашиваем все доступные данные
+                params['iss.meta'] = 'off'
+                params['lang'] = 'ru'
+
+                start_time = datetime.now()
+                async with session.get(url, params=params) as response:
+                    elapsed = (datetime.now() - start_time).total_seconds()
+
+                    logger.info(f"⏱️ Время ответа: {elapsed:.2f}с, Статус: {response.status}")
+
+                    # Логируем URL с параметрами для отладки
+                    actual_url = str(response.url)
+                    logger.info(f"🔗 Фактический URL: {actual_url}")
+
+                    if response.status == 200:
+                        data = await response.json()
+
+                        # Логируем структуру ответа
+                        if 'securities' in data:
+                            securities_data = data['securities']
+                            if 'data' in securities_data:
+                                boards = set()
+                                for row in securities_data['data']:
+                                    if len(row) > 1:
+                                        boards.add(row[1])  # BOARDID
+                                logger.info(f"📊 Найденные режимы (BOARDID): {boards}")
+
+                        if 'marketdata' in data:
+                            marketdata = data['marketdata']
+                            if 'data' in marketdata:
+                                logger.info(f"📈 marketdata строк: {len(marketdata['data'])}")
+
+                        logger.info(f"✅ Успешный ответ, размер: {len(str(data))} байт")
+                        return data
+                    elif response.status == 404:
+                        logger.warning(f"❌ 404 Not Found: {url}")
+                        return None
+                    elif response.status == 429:
+                        wait_time = retry_delay * (attempt + 3)
+                        logger.warning(f"⚠️ 429 Too Many Requests, ждем {wait_time}с")
+                        await asyncio.sleep(wait_time)
+                    elif response.status >= 500:
+                        wait_time = retry_delay * (attempt + 2)
+                        logger.warning(f"⚠️ {response.status} Server Error, ждем {wait_time}с")
+                        await asyncio.sleep(wait_time)
                     else:
-                        # Для XML ответов
-                        text = await response.text()
-                        return self._parse_xml(text)
-                else:
-                    logger.error(f"Ошибка MOEX API: {response.status} - {await response.text()}")
-                    return None
+                        logger.error(f"❌ Ошибка {response.status}: {url}")
+                        return None
 
-        except asyncio.TimeoutError:
-            logger.error(f"Таймаут запроса к MOEX: {url}")
-            return None
-        except aiohttp.ClientConnectorError as e:
-            logger.error(f"Ошибка подключения к MOEX: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Ошибка запроса к MOEX: {e}")
-            return None
+            except asyncio.TimeoutError:
+                logger.warning(f"⏱️ Таймаут запроса (попытка {attempt + 1}/{max_retries})")
+            except aiohttp.ClientConnectorError as e:
+                logger.warning(f"🔌 Ошибка подключения (попытка {attempt + 1}/{max_retries}): {e}")
+            except Exception as e:
+                logger.error(f"💥 Неизвестная ошибка: {e}", exc_info=True)
 
-    def _parse_xml(self, xml_text: str) -> Dict:
-        """Парсинг XML ответа от MOEX"""
-        try:
-            root = ET.fromstring(xml_text)
-            result = {}
+            if attempt < max_retries - 1:
+                wait_time = retry_delay * (attempt + 1)
+                logger.info(f"⏳ Повторная попытка через {wait_time}с...")
+                await asyncio.sleep(wait_time)
 
-            for data in root.findall('.//data'):
-                data_id = data.get('id')
-                rows = []
+        logger.error(f"❌ Не удалось выполнить запрос после {max_retries} попыток: {url}")
+        return None
 
-                for row in data.findall('.//rows/row'):
-                    row_data = {}
-                    for key, value in row.attrib.items():
-                        row_data[key] = value
-                    rows.append(row_data)
+    def _determine_engine_market(self, symbol: str, asset_type_hint: str = None) -> Tuple[str, str]:
+        """Определение engine и market для символа на основе общих правил"""
+        symbol = symbol.upper()
+        logger.debug(f"🔍 Определение engine/market для {symbol}, подсказка: {asset_type_hint}")
 
-                result[data_id] = rows
-
+        # Если есть подсказка типа актива - используем её
+        if asset_type_hint and asset_type_hint in self.ENGINE_MARKET_MAP:
+            result = self.ENGINE_MARKET_MAP[asset_type_hint]
+            logger.debug(f"✅ Используем подсказку: {result}")
             return result
-        except Exception as e:
-            logger.error(f"Ошибка парсинга XML: {e}")
-            return {}
 
-    async def search_securities(self, query: str, limit: int = 10) -> List[Dict]:
-        """Поиск инструментов на MOEX"""
-        cache_key = f"search_{query}"
+        # Общие правила определения типа инструмента
+        if symbol.endswith('F') and len(symbol) == 4 and symbol[0].isalpha():
+            # Фьючерсы обычно имеют формат: 3 буквы + F (например, SiF, RTSF)
+            logger.debug(f"✅ Похоже на фьючерс")
+            return 'futures', 'forts'
+
+        if symbol.endswith('T') and len(symbol) == 4 and symbol[0].isalpha():
+            # Некоторые фьючерсы
+            return 'futures', 'forts'
+
+        if len(symbol) <= 4 and symbol.isalpha():
+            # Короткие буквенные тикеры обычно акции
+            logger.debug(f"✅ Короткий буквенный тикер, скорее всего акция")
+            return 'stock', 'shares'
+
+        # По умолчанию пробуем акции
+        logger.debug(f"✅ Используем по умолчанию: акции")
+        return 'stock', 'shares'
+
+    async def get_security_info(self, symbol: str, asset_type_hint: str = None) -> Optional[Dict]:
+        """Получение детальной информации об инструменте"""
+        symbol = symbol.upper().strip()
+        logger.info(f"🔍 ПОИСК ИНФОРМАЦИИ: {symbol} (подсказка: {asset_type_hint})")
+
+        cache_key = f"info_{symbol}"
 
         # Проверка кэша
-        if cache_key in self.cache:
-            data, timestamp = self.cache[cache_key]
-            if datetime.now() - timestamp < timedelta(seconds=self.cache_ttl):
+        if cache_key in self.info_cache:
+            data, timestamp = self.info_cache[cache_key]
+            if datetime.now() - timestamp < timedelta(seconds=self.cache_ttl * 2):
+                logger.info(f"📦 Данные из кэша для {symbol}")
                 return data
 
-        url = f"{self.base_url}/securities.json"
+        # Определяем engine и market
+        engine, market = self._determine_engine_market(symbol, asset_type_hint)
+
+        # Формируем URL
+        url = f"{self.base_url}/engines/{engine}/markets/{market}/securities/{symbol}.json"
+        logger.info(f"🔗 Пробуем URL: {url}")
+
         params = {
-            'q': query,
+            'iss.meta': 'off',
+            'iss.only': 'securities,marketdata',
             'lang': 'ru',
-            'limit': limit
+            'marketdata.columns': 'SECID,BOARDID,LAST,LCURRENTPRICE,MARKETPRICE,CLOSEPRICE,PREVPRICE,WAPRICE,OPEN,HIGH,LOW'
         }
 
         response = await self._make_request(url, params)
-        result = []
-
-        if response and 'securities' in response:
-            securities = response['securities'].get('data', [])
-            columns = response['securities'].get('columns', [])
-
-            for row in securities[:limit]:
-                security = dict(zip(columns, row))
-
-                # Определяем тип инструмента
-                asset_type = self._determine_asset_type(security)
-
-                result.append({
-                    'symbol': security.get('SECID'),
-                    'name': security.get('SHORTNAME') or security.get('SECNAME'),
-                    'full_name': security.get('LATNAME') or security.get('SECNAME'),
-                    'asset_type': asset_type,
-                    'currency': security.get('CURRENCYID', 'RUB'),
-                    'market': security.get('MARKET'),
-                    'engine': security.get('ENGINE'),
-                    'isin': security.get('ISIN'),
-                    'lot_size': int(security.get('LOTSIZE', 1))
-                })
-
-        # Сохраняем в кэш
-        self.cache[cache_key] = (result, datetime.now())
-        return result
-
-    async def get_security_info(self, symbol: str) -> Optional[Dict]:
-        """Получение детальной информации об инструменте"""
-        cache_key = f"info_{symbol}"
-
-        if cache_key in self.cache:
-            data, timestamp = self.cache[cache_key]
-            if datetime.now() - timestamp < timedelta(seconds=self.cache_ttl * 2):
-                return data
-
-        # Сначала ищем по символу
-        url = f"{self.base_url}/securities/{symbol}.json"
-        response = await self._make_request(url)
 
         if not response:
+            logger.warning(f"❌ Не найдено на {engine}/{market}, пробуем альтернативы...")
+
+            # Пробуем все возможные комбинации
+            alt_options = [
+                ('stock', 'shares'),
+                ('stock', 'bonds'),
+                ('stock', 'etf'),
+                ('currency', 'selt'),
+                ('futures', 'forts'),
+                ('stock', 'index'),
+            ]
+
+            for alt_engine, alt_market in alt_options:
+                if (alt_engine, alt_market) == (engine, market):
+                    continue
+
+                alt_url = f"{self.base_url}/engines/{alt_engine}/markets/{alt_market}/securities/{symbol}.json"
+                logger.info(f"🔄 Пробуем альтернативу: {alt_url}")
+
+                response = await self._make_request(alt_url, params)
+                if response:
+                    engine, market = alt_engine, alt_market
+                    logger.info(f"✅ Найдено на {engine}/{market}")
+                    break
+
+        if not response:
+            logger.warning(f"❌ Инструмент {symbol} не найден нигде")
             return None
 
-        result = {
-            'symbol': symbol,
-            'description': {},
-            'prices': {},
-            'market_data': {}
-        }
+        # Парсим ответ
+        logger.info(f"📝 Парсинг ответа для {symbol}...")
+        result = await self._parse_security_response(symbol, response, engine, market)
 
-        # Парсим описание
-        if 'description' in response:
-            desc_data = response['description'].get('data', [])
-            desc_cols = response['description'].get('columns', [])
-            for row in desc_data:
-                result['description'] = dict(zip(desc_cols, row))
-
-        # Парсим рыночные данные
-        if 'marketdata' in response:
-            market_data = response['marketdata'].get('data', [])
-            market_cols = response['marketdata'].get('columns', [])
-            for row in market_data:
-                result['market_data'] = dict(zip(market_cols, row))
-
-        # Определяем тип и рынок
-        if result['description']:
-            # Безопасное получение имени
-            name = result['description'].get('SHORTNAME')
-            if name is None:
-                name = result['description'].get('SECNAME', symbol)
-
-            result['asset_type'] = self._determine_asset_type(result['description'])
-            result['currency'] = result['description'].get('CURRENCYID', 'RUB')
-            result['name'] = name
-            result['lot_size'] = int(result['description'].get('LOTSIZE', 1))
-            return result
+        if result:
+            self.info_cache[cache_key] = (result, datetime.now())
+            logger.info(f"✅ Успешно получена информация для {symbol}: {result.get('name')}")
+            logger.info(f"   Тип: {result.get('asset_type')}, Валюта: {result.get('currency')}")
+            if result.get('current_price'):
+                logger.info(f"   Цена: {result.get('current_price')}")
+            else:
+                logger.warning(f"⚠️ Цена для {symbol} не найдена в ответе")
         else:
-            # Если нет описания, но символ существует (например, валютная пара)
-            result['asset_type'] = 'other'
-            result['currency'] = 'RUB'
-            result['name'] = symbol
-            result['lot_size'] = 1
-            return result
+            logger.warning(f"❌ Не удалось распарсить ответ для {symbol}")
 
-        self.cache[cache_key] = (result, datetime.now())
         return result
 
-    async def get_current_price(self, symbol: str) -> Optional[Decimal]:
+    async def _parse_security_response(self, symbol: str, response: Dict, engine: str, market: str) -> Optional[Dict]:
+        """Парсинг ответа от MOEX"""
+        try:
+            result = {
+                'symbol': symbol.upper(),
+                'name': symbol,
+                'asset_type': self._map_engine_market_to_type(engine, market),
+                'currency': 'RUB',  # По умолчанию RUB
+                'lot_size': 1,
+                'engine': engine,
+                'market': market,
+                'market_data': {},
+                'description': {},
+                'found': False,
+                'current_price': None
+            }
+
+            logger.debug(f"Блоки в ответе для {symbol}: {list(response.keys())}")
+
+            # Проходим по всем блокам
+            for block_name, block_data in response.items():
+                if not isinstance(block_data, dict) or 'data' not in block_data:
+                    continue
+
+                columns = block_data.get('columns', [])
+                rows = block_data.get('data', [])
+
+                if not columns or not rows:
+                    continue
+
+                # Обработка description
+                if block_name == 'description':
+                    for row in rows:
+                        if isinstance(row, list) and len(row) >= 2:
+                            key = row[0]
+                            value = row[1] if len(row) > 1 else None
+                            if key and value is not None:
+                                result['description'][key] = value
+                                result['found'] = True
+
+                # Обработка securities - базовая информация об инструменте
+                elif block_name == 'securities':
+                    for row in rows:
+                        if not isinstance(row, list):
+                            continue
+
+                        row_dict = dict(zip(columns, row))
+
+                        # Сохраняем информацию из любой строки
+                        if row_dict.get('SHORTNAME'):
+                            result['name'] = str(row_dict['SHORTNAME'])
+                        elif row_dict.get('SECNAME'):
+                            result['name'] = str(row_dict['SECNAME'])
+
+                        # Определяем валюту
+                        if row_dict.get('CURRENCYID'):
+                            currency = str(row_dict['CURRENCYID'])
+                            # Нормализуем валюту (SUR = RUB в MOEX)
+                            if currency in ['SUR', 'RUR']:
+                                currency = 'RUB'
+                            result['currency'] = currency
+
+                        if row_dict.get('LOTSIZE'):
+                            try:
+                                result['lot_size'] = int(row_dict['LOTSIZE'])
+                            except (ValueError, TypeError):
+                                pass
+
+                        if row_dict.get('SECTOR'):
+                            result['sector'] = str(row_dict['SECTOR'])
+
+                        result['found'] = True
+
+                # Обработка marketdata - поиск цены
+                elif block_name == 'marketdata':
+                    # Приоритетные режимы торгов для разных типов инструментов
+                    priority_boards = ['TQBR', 'TQTF', 'TQBD', 'CETS', 'FUT']
+
+                    # Сначала ищем в приоритетных режимах
+                    for priority_board in priority_boards:
+                        for row in rows:
+                            if not isinstance(row, list):
+                                continue
+
+                            row_dict = dict(zip(columns, row))
+                            board_id = row_dict.get('BOARDID', '')
+
+                            if board_id == priority_board:
+                                # Сохраняем все поля
+                                for key, value in row_dict.items():
+                                    if value is not None:
+                                        result['market_data'][key] = value
+
+                                # Ищем цену
+                                price = self._extract_price_from_row(row_dict)
+                                if price:
+                                    result['current_price'] = price
+                                    result['found'] = True
+                                    logger.debug(f"💰 Цена найдена в режиме {board_id}: {price}")
+                                    break
+
+                        if result.get('current_price'):
+                            break
+
+                    # Если не нашли в приоритетных, ищем в любом режиме
+                    if not result.get('current_price'):
+                        for row in rows:
+                            if not isinstance(row, list):
+                                continue
+
+                            row_dict = dict(zip(columns, row))
+                            price = self._extract_price_from_row(row_dict)
+
+                            if price:
+                                result['current_price'] = price
+                                result['found'] = True
+                                board_id = row_dict.get('BOARDID', 'unknown')
+                                logger.debug(f"💰 Цена найдена в режиме {board_id}: {price}")
+                                break
+
+            # Если цена не найдена в marketdata, пробуем PREVPRICE из securities
+            if not result.get('current_price') and 'securities' in response:
+                securities_data = response['securities']
+                columns = securities_data.get('columns', [])
+                rows = securities_data.get('data', [])
+
+                for row in rows:
+                    if not isinstance(row, list):
+                        continue
+
+                    row_dict = dict(zip(columns, row))
+                    if row_dict.get('PREVPRICE'):
+                        price = to_decimal(row_dict['PREVPRICE'])
+                        if price and price > 0:
+                            result['current_price'] = price
+                            result['found'] = True
+                            logger.debug(f"💰 Используем PREVPRICE как запасной вариант: {price}")
+                            break
+
+            if result.get('current_price'):
+                logger.info(f"✅ Успешно получена цена для {symbol}: {result['current_price']} {result['currency']}")
+            else:
+                logger.warning(f"⚠️ Цена для {symbol} не найдена")
+
+            return result if result.get('found') else None
+
+        except Exception as e:
+            logger.error(f"Ошибка парсинга ответа для {symbol}: {e}", exc_info=True)
+            return None
+
+    def _extract_price_from_row(self, row_dict: Dict) -> Optional[Decimal]:
+        """Извлечение цены из строки marketdata (общий метод)"""
+
+        # Приоритетные поля для цены
+        price_fields = [
+            'LCURRENTPRICE',  # Текущая цена (наиболее актуальная)
+            'LAST',  # Последняя сделка
+            'MARKETPRICE',  # Рыночная цена
+            'CLOSEPRICE',  # Цена закрытия
+            'PREVPRICE',  # Цена предыдущего закрытия
+            'WAPRICE',  # Средневзвешенная цена
+            'OPEN',  # Цена открытия
+            'HIGH',  # Максимум
+            'LOW'  # Минимум
+        ]
+
+        for field in price_fields:
+            if field in row_dict and row_dict[field] is not None:
+                price = to_decimal(row_dict[field])
+                if price and price > 0:
+                    return price
+
+        return None
+
+    def _map_engine_market_to_type(self, engine: str, market: str) -> str:
+        """Преобразование engine/market в тип актива"""
+        if engine == 'stock':
+            if market == 'shares':
+                return 'stock'
+            elif market == 'bonds':
+                return 'bond'
+            elif market == 'etf':
+                return 'etf'
+            elif market == 'index':
+                return 'index'
+        elif engine == 'currency':
+            return 'currency'
+        elif engine == 'futures':
+            return 'futures'
+        return 'stock'
+
+    async def get_current_price(self, symbol: str, asset_type_hint: str = None) -> Optional[Decimal]:
         """Получение текущей цены инструмента"""
+        logger.info(f"💰 ЗАПРОС ЦЕНЫ: {symbol}")
+
+        symbol = symbol.upper().strip()
         cache_key = f"price_{symbol}"
 
         # Проверка кэша
         if cache_key in self.cache:
             price, timestamp = self.cache[cache_key]
             if datetime.now() - timestamp < timedelta(seconds=self.cache_ttl):
+                logger.info(f"📦 Цена из кэша для {symbol}: {price}")
                 return price
 
         # Получаем информацию
-        info = await self.get_security_info(symbol)
+        info = await self.get_security_info(symbol, asset_type_hint)
         if not info:
+            logger.warning(f"❌ Не удалось получить информацию для {symbol}")
             return None
 
-        price = None
-        market_data = info.get('market_data', {})
+        # Извлекаем цену
+        price = info.get('current_price')
 
-        # Пробуем разные поля с ценами
-        if market_data.get('LAST'):
-            price = to_decimal(market_data['LAST'])
-        elif market_data.get('CURRENTVALUE'):
-            price = to_decimal(market_data['CURRENTVALUE'])
-        elif market_data.get('LCURRENTPRICE'):
-            price = to_decimal(market_data['LCURRENTPRICE'])
-
-        if price:
-            # Сохраняем в кэш
+        if price and price > 0:
             self.cache[cache_key] = (price, datetime.now())
+            self.last_known_prices[symbol] = price
+            logger.info(f"✅ Получена цена {symbol}: {price}")
             return price
 
+        logger.warning(f"⚠️ Не удалось получить цену {symbol}")
         return None
 
-    async def get_prices(self, symbols: List[str]) -> Dict[str, Decimal]:
-        """Получение цен нескольких инструментов"""
+    async def get_prices(self, symbols: List[str], asset_types: Dict[str, str] = None) -> Dict[str, Decimal]:
+        """
+        Получение цен нескольких символов одновременно
+
+        Args:
+            symbols: Список символов
+            asset_types: Словарь с типами активов для каждого символа (опционально)
+
+        Returns:
+            Dict[str, Decimal]: Словарь {символ: цена}
+        """
+        logger.info(f"💰 ПОЛУЧЕНИЕ ЦЕН ДЛЯ {len(symbols)} СИМВОЛОВ")
+
         result = {}
+
+        # Используем asyncio.gather для параллельных запросов
         tasks = []
-
         for symbol in symbols:
-            tasks.append(self.get_current_price(symbol))
+            # Получаем тип актива для символа, если есть
+            asset_type = None
+            if asset_types and symbol in asset_types:
+                asset_type = asset_types[symbol]
 
+            tasks.append(self.get_current_price(symbol, asset_type))
+
+        # Выполняем все запросы параллельно
         prices = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for symbol, price in zip(symbols, prices):
-            if isinstance(price, Decimal) and price > 0:
+        # Обрабатываем результаты
+        for i, symbol in enumerate(symbols):
+            price = prices[i]
+            if isinstance(price, Exception):
+                logger.error(f"Ошибка получения цены для {symbol}: {price}")
+            elif price is not None:
                 result[symbol] = price
+                logger.debug(f"✅ {symbol}: {price}")
 
+        logger.info(f"✅ Получены цены для {len(result)}/{len(symbols)} символов")
         return result
 
-    async def get_market_trading_status(self, symbol: str) -> Dict[str, Any]:
-        """Получение статуса торгов по инструменту"""
-        info = await self.get_security_info(symbol)
-        if not info:
-            return {'is_trading': False, 'status': 'unknown'}
-
-        market_data = info.get('market_data', {})
-        status = market_data.get('TRADINGSTATUS', 'unknown')
-
-        # Определяем, идут ли торги
-        is_trading = status in ['T', 'Normal', 'Open']
-
-        return {
-            'is_trading': is_trading,
-            'status': status,
-            'last_price': to_decimal(market_data.get('LAST')),
-            'change': to_decimal(market_data.get('LASTCHANGE')),
-            'change_percent': to_decimal(market_data.get('LASTCHANGEPRCNT')),
-            'volume': market_data.get('VOLTODAY'),
-            'time': market_data.get('TIME')
-        }
-
-    async def get_board_info(self, symbol: str) -> Optional[Dict]:
-        """Получение информации о режиме торгов"""
-        url = f"{self.base_url}/securities/{symbol}/boards.json"
-        response = await self._make_request(url)
-
-        if response and 'boards' in response:
-            boards_data = response['boards'].get('data', [])
-            boards_cols = response['boards'].get('columns', [])
-
-            for row in boards_data:
-                board = dict(zip(boards_cols, row))
-                if board.get('is_primary', False) or board.get('boardid') == 'TQBR':
-                    return {
-                        'board_id': board.get('boardid'),
-                        'engine': board.get('engine'),
-                        'market': board.get('market'),
-                        'title': board.get('title'),
-                        'is_traded': board.get('is_traded', False)
-                    }
-
-        return None
-
-    def _determine_asset_type(self, security: Dict) -> str:
-        """Определение типа актива по данным MOEX"""
-        # Пробуем определить по типу инструмента
-        sec_type = security.get('TYPENAME', '').upper()
-        group = security.get('GROUP', '').upper()
-
-        if 'АКЦИЯ' in sec_type or 'SHARE' in sec_type:
-            return 'stock'
-        elif 'ОБЛИГАЦИЯ' in sec_type or 'BOND' in sec_type:
-            return 'bond'
-        elif 'ETF' in sec_type or 'ПИФ' in sec_type or 'ETFS' in group:
-            return 'etf'
-        elif 'ВАЛЮТА' in sec_type or 'CURRENCY' in sec_type:
-            return 'currency'
-        elif 'ФЬЮЧЕРС' in sec_type or 'FUTURES' in sec_type:
-            return 'futures'
-        else:
-            return 'other'
-
-    async def get_historical_prices(self, symbol: str, days: int = 30) -> List[Dict]:
-        """Получение исторических цен"""
-        from datetime import date, timedelta
-
-        end_date = date.today()
-        start_date = end_date - timedelta(days=days)
-
-        url = f"{self.base_url}/history/engines/stock/markets/shares/securities/{symbol}.json"
-        params = {
-            'from': start_date.strftime('%Y-%m-%d'),
-            'till': end_date.strftime('%Y-%m-%d'),
-            'limit': days
-        }
-
-        response = await self._make_request(url, params)
-        result = []
-
-        if response and 'history' in response:
-            history_data = response['history'].get('data', [])
-            history_cols = response['history'].get('columns', [])
-
-            for row in history_data:
-                item = dict(zip(history_cols, row))
-                result.append({
-                    'date': item.get('TRADEDATE'),
-                    'open': to_decimal(item.get('OPEN')),
-                    'high': to_decimal(item.get('HIGH')),
-                    'low': to_decimal(item.get('LOW')),
-                    'close': to_decimal(item.get('CLOSE')),
-                    'volume': item.get('VOLUME')
-                })
-
-        return result
-
-    async def get_index_composition(self, index: str = 'IMOEX') -> List[Dict]:
-        """Получение состава индекса (IMOEX, RTSI и т.д.)"""
-        url = f"{self.base_url}/statistics/engines/stock/markets/index/analytics/{index}.json"
-        response = await self._make_request(url)
-
-        result = []
-        if response and 'analytics' in response:
-            analytics_data = response['analytics'].get('data', [])
-            analytics_cols = response['analytics'].get('columns', [])
-
-            for row in analytics_data:
-                item = dict(zip(analytics_cols, row))
-                result.append({
-                    'symbol': item.get('SECID'),
-                    'name': item.get('SECNAME'),
-                    'weight': float(item.get('WEIGHT', 0)) / 100,
-                    'price': to_decimal(item.get('PRICE'))
-                })
-
-        return result
+    async def validate_symbol(self, symbol: str, asset_type_hint: str = None) -> Tuple[bool, Optional[Dict]]:
+        """Проверка существования символа"""
+        logger.info(f"✅ ПРОВЕРКА СИМВОЛА: {symbol}")
+        info = await self.get_security_info(symbol, asset_type_hint)
+        if info and info.get('found'):
+            return True, info
+        return False, None
 
     async def close(self):
-        """Закрытие сессии с таймаутом"""
+        """Закрытие сессии"""
         async with self._lock:
             if self.session and not self.session.closed:
-                logger.info("🔄 Закрытие сессии MOEX...")
                 try:
-                    # Даем время на завершение текущих запросов
-                    await asyncio.sleep(0.5)
                     await self.session.close()
                     logger.info("✅ Сессия MOEX закрыта")
                 except Exception as e:
-                    logger.error(f"Ошибка при закрытии сессии MOEX: {e}")
+                    logger.error(f"Ошибка при закрытии сессии: {e}")
                 finally:
                     self.session = None
 
-    def clear_cache(self):
-        """Очистка кэша"""
-        self.cache.clear()
-        logger.info("🧹 Кэш MOEX очищен")
 
-
-# Глобальный экземпляр клиента MOEX
+# Глобальный экземпляр
 moex_client = MOEXClient()

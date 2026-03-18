@@ -2,14 +2,16 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
+from aiogram.exceptions import TelegramBadRequest
 
 from database.repositories import UserRepository
 from keyboards import Keyboards
 from logger import get_logger, log_function_call
 from constants import WELCOME_MESSAGE, HELP_MESSAGE
+from callback_utils import safe_callback_answer, safe_edit_message, safe_delete_message
 
 router = Router()
-logger = get_logger('handlers')
+logger = get_logger('handlers.common')
 
 
 @router.message(Command("start"))
@@ -63,11 +65,12 @@ async def show_help(message: Message):
 @log_function_call()
 async def back_to_main(callback: CallbackQuery, state: FSMContext):
     """Возврат в главное меню"""
-    await callback.answer()
+    await safe_callback_answer(callback)
     await state.clear()
 
-    # Исправление: удаляем предыдущее сообщение и отправляем новое с обычной клавиатурой
-    await callback.message.delete()
+    # Пытаемся удалить сообщение
+    await safe_delete_message(callback.message)
+
     await callback.message.answer(
         "🏠 <b>Главное меню</b>",
         reply_markup=Keyboards.get_main_menu()
@@ -78,11 +81,12 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext):
 @log_function_call()
 async def cancel_action(callback: CallbackQuery, state: FSMContext):
     """Отмена действия"""
-    await callback.answer()
+    await safe_callback_answer(callback, "❌ Действие отменено")
     await state.clear()
 
-    # Исправление: удаляем предыдущее сообщение и отправляем новое с обычной клавиатурой
-    await callback.message.delete()
+    # Пытаемся удалить сообщение
+    await safe_delete_message(callback.message)
+
     await callback.message.answer(
         "❌ Действие отменено",
         reply_markup=Keyboards.get_main_menu()
@@ -93,12 +97,12 @@ async def cancel_action(callback: CallbackQuery, state: FSMContext):
 @log_function_call()
 async def skip_action(callback: CallbackQuery, state: FSMContext):
     """Пропуск шага"""
-    await callback.answer()
+    await safe_callback_answer(callback, "⏭️ Шаг пропущен")
     await state.update_data(skipped=True)
 
-    # Здесь нужно будет добавить логику перехода к следующему шагу
-    # Пока просто удаляем сообщение
-    await callback.message.delete()
+    # Пытаемся удалить сообщение
+    await safe_delete_message(callback.message)
+
     await callback.message.answer(
         "⏭️ Шаг пропущен",
         reply_markup=Keyboards.get_main_menu()

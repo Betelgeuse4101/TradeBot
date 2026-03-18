@@ -2,6 +2,7 @@ import logging
 import sys
 import os
 import time
+import aiogram.exceptions
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -300,6 +301,13 @@ def log_function_call(logger=None):
                 result = await func(*args, **kwargs)
                 logger.debug(f"✅ {func.__name__} завершена")
                 return result
+            except aiogram.exceptions.TelegramBadRequest as e:
+                # Игнорируем ошибки с устаревшими callback'ами
+                if "query is too old" in str(e) or "query ID is invalid" in str(e):
+                    logger.debug(f"⚠️ Пропуск устаревшего callback в {func.__name__}: {e}")
+                    return None
+                logger.error(f"❌ Ошибка Telegram в {func.__name__}: {e}")
+                raise
             except Exception as e:
                 logger.error(f"❌ Ошибка в {func.__name__}: {e}", exc_info=True)
                 raise

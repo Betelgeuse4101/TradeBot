@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Set, Any
+from typing import Dict, List, Optional, Any, Tuple
 from decimal import Decimal
 import asyncio
 from datetime import datetime, timedelta
@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 from moex_client import moex_client
 from database.repositories import PriceHistoryRepository, AssetRepository
 from logger import get_logger
-from utils import to_decimal, format_money
+from utils import to_decimal
+from config import Config
 
 logger = get_logger('price_service')
 
@@ -15,20 +16,37 @@ class PriceService:
     """Сервис для получения и кэширования цен с MOEX"""
 
     def __init__(self):
-        self.price_cache = {}  # symbol -> (price, timestamp)
-        self.info_cache = {}  # symbol -> (info, timestamp)
-        self.cache_ttl = 300  # 5 минут для MOEX
+        self.price_cache = {}
+        self.cache_ttl = Config.PRICE_CACHE_TTL
         self._closed = False
+        self._last_market_check = None
+        self._market_was_open = False
 
-    async def get_price(self, symbol: str, use_cache: bool = True) -> Optional[Decimal]:
+    def _is_market_open(self) -> bool:
+        """Проверяет, открыта ли биржа в данный момент"""
+        now = datetime.now()
+        if now.weekday() >= 5:  # Сб, Вс
+            return False
+
+        current_hour = now.hour
+        current_minute = now.minute
+
+        if current_hour < Config.MOEX_TRADING_START_HOUR:
+            return False
+        if current_hour > Config.MOEX_TRADING_END_HOUR:
+            return False
+        if (current_hour == Config.MOEX_TRADING_END_HOUR and
+            current_minute > Config.MOEX_TRADING_END_MINUTE):
+            return False
+
+        return True
+
+    async def get_price(self, symbol: str, use_cache: bool = True,
+                        asset_type_hint: str = None) -> Optional[Decimal]:
         """Получение цены символа с MOEX"""
         if self._closed:
-            logger.warning("⚠️ Сервис цен закрыт, возвращаем кэшированные данные")
-            # Пробуем взять из истории БД
             cached = await PriceHistoryRepository.get_price(symbol)
-            if cached:
-                return cached['price']
-            return None
+            return cached['price'] if cached else None
 
         cache_key = symbol.upper()
 
@@ -36,109 +54,73 @@ class PriceService:
         if use_cache and cache_key in self.price_cache:
             price, timestamp = self.price_cache[cache_key]
             if datetime.now() - timestamp < timedelta(seconds=self.cache_ttl):
-                logger.debug(f"Цена {symbol} из кэша: {price}")
                 return price
 
         try:
-            # Запрашиваем с MOEX
-            price = await moex_client.get_current_price(symbol)
+            price = await moex_client.get_current_price(symbol, asset_type_hint)
 
             if price and price > 0:
-                # Сохраняем в кэш
                 self.price_cache[cache_key] = (price, datetime.now())
-
-                # Сохраняем в историю БД
                 await PriceHistoryRepository.update_price(symbol, price)
-
-                logger.info(f"✅ Получена цена {symbol}: {price}")
                 return price
-            else:
-                logger.warning(f"⚠️ Не удалось получить цену {symbol}")
 
         except Exception as e:
             logger.error(f"Ошибка получения цены {symbol}: {e}")
 
-        # Пробуем взять из истории БД
+        # Пробуем из истории
         cached = await PriceHistoryRepository.get_price(symbol)
         if cached:
-            logger.info(f"📦 Цена {symbol} из истории БД: {cached['price']}")
             return cached['price']
 
         return None
 
-    async def get_prices(self, symbols: List[str]) -> Dict[str, Decimal]:
+    async def validate_symbol_with_info(self, symbol: str, asset_type_hint: str = None) -> Tuple[bool, Optional[Dict]]:
+        """Проверка существования символа и получение информации"""
+        is_valid, info = await moex_client.validate_symbol(symbol, asset_type_hint)
+
+        if info:
+            type_names = {
+                'stock': 'Акция',
+                'bond': 'Облигация',
+                'etf': 'ETF',
+                'currency': 'Валюта',
+                'futures': 'Фьючерс',
+                'index': 'Индекс'
+            }
+            info['asset_type_display'] = type_names.get(info.get('asset_type', 'stock'), 'Акция')
+
+        return is_valid, info
+
+    async def get_prices(self, symbols: List[str], asset_types: Dict[str, str] = None) -> Dict[str, Decimal]:
         """Получение цен нескольких символов"""
         if self._closed:
-            logger.warning("⚠️ Сервис цен закрыт, возвращаем пустой результат")
             return {}
 
-        result = {}
-        tasks = []
+        return await moex_client.get_prices(symbols, asset_types)
 
-        for symbol in symbols:
-            tasks.append(self.get_price(symbol))
-
-        prices = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for symbol, price in zip(symbols, prices):
-            if isinstance(price, Decimal) and price > 0:
-                result[symbol] = price
-
-        logger.info(f"📊 Получено цен: {len(result)} из {len(symbols)}")
-        return result
-
-    async def get_asset_info(self, symbol: str) -> Optional[Dict]:
-        """Получение информации об активе"""
-        if self._closed:
-            return None
-
-        cache_key = f"info_{symbol.upper()}"
-
-        # Проверка кэша
-        if cache_key in self.info_cache:
-            info, timestamp = self.info_cache[cache_key]
-            if datetime.now() - timestamp < timedelta(seconds=self.cache_ttl * 2):
-                return info
-
-        try:
-            info = await moex_client.get_security_info(symbol)
-            if info:
-                self.info_cache[cache_key] = (info, datetime.now())
-                return info
-        except Exception as e:
-            logger.error(f"Ошибка получения информации {symbol}: {e}")
-
-        return None
-
-    async def search_assets(self, query: str, limit: int = 10) -> List[Dict]:
-        """Поиск активов на MOEX"""
-        if self._closed:
-            return []
-
-        try:
-            results = await moex_client.search_securities(query, limit)
-            return results
-        except Exception as e:
-            logger.error(f"Ошибка поиска '{query}': {e}")
-            return []
-
-    async def update_portfolio_prices(self, portfolio_id: int):
+    async def update_portfolio_prices(self, portfolio_id: int) -> int:
         """Обновление цен всех активов портфеля"""
         if self._closed:
-            logger.warning(f"⚠️ Сервис цен закрыт, пропускаем обновление портфеля {portfolio_id}")
             return 0
 
-        from database.repositories import AssetRepository
+        if not self._is_market_open():
+            logger.debug(f"Рынок закрыт, пропускаем обновление портфеля {portfolio_id}")
+            return 0
 
         assets = await AssetRepository.get_portfolio_assets(portfolio_id)
         if not assets:
-            logger.info(f"📭 Нет активов в портфеле {portfolio_id}")
             return 0
 
-        symbols = [a['symbol'] for a in assets]
-        logger.info(f"🔄 Обновление цен для портфеля {portfolio_id}: {symbols}")
+        # Собираем символы и их типы
+        symbols = []
+        asset_types = {}
+        for a in assets:
+            symbols.append(a['symbol'])
+            asset_types[a['symbol']] = a['asset_type']
 
-        prices = await self.get_prices(symbols)
+        logger.info(f"🔄 Обновление цен для портфеля {portfolio_id}: {len(symbols)} активов")
+
+        prices = await self.get_prices(symbols, asset_types)
 
         updated_count = 0
         for asset in assets:
@@ -146,13 +128,12 @@ class PriceService:
                 await AssetRepository.update_price(asset['id'], prices[asset['symbol']])
                 updated_count += 1
 
-        logger.info(f"✅ Обновлены цены для портфеля {portfolio_id}: {updated_count}/{len(assets)} активов")
+        logger.info(f"✅ Обновлены цены для портфеля {portfolio_id}: {updated_count}/{len(assets)}")
         return updated_count
 
     async def calculate_portfolio_value(self, portfolio_id: int, assets: List[Dict] = None) -> Dict:
         """Расчет стоимости портфеля"""
         if assets is None:
-            from database.repositories import AssetRepository
             assets = await AssetRepository.get_portfolio_assets(portfolio_id)
 
         total_value = Decimal('0')
@@ -193,52 +174,15 @@ class PriceService:
             'assets_count': len(assets)
         }
 
-    async def get_market_status(self, symbol: str = None) -> Dict[str, Any]:
-        """Получение статуса рынка для инструмента"""
+    async def search_assets(self, query: str, limit: int = 10) -> List[Dict]:
+        """Поиск активов на MOEX"""
         if self._closed:
-            return {'market': 'closed'}
+            return []
+        return await moex_client.search_securities(query, limit)
 
-        if symbol:
-            return await moex_client.get_market_trading_status(symbol)
-        else:
-            # Общий статус рынка (по индексу IMOEX)
-            imoex_info = await self.get_asset_info('IMOEX')
-            if imoex_info:
-                return {
-                    'market': 'IMOEX',
-                    'last_price': imoex_info.get('market_data', {}).get('LAST'),
-                    'change': imoex_info.get('market_data', {}).get('LASTCHANGE'),
-                    'change_percent': imoex_info.get('market_data', {}).get('LASTCHANGEPRCNT')
-                }
-            return {'market': 'unknown'}
-
-    async def validate_symbol(self, symbol: str) -> bool:
-        """Проверка существования символа на MOEX"""
-        if self._closed:
-            return False
-
-        # Сначала пробуем получить информацию об инструменте
-        info = await self.get_asset_info(symbol)
-        if info and info.get('name'):
-            return True
-
-        # Если не получили информацию, пробуем получить цену
-        price = await self.get_price(symbol, use_cache=False)
-        return price is not None and price > 0
-
-    async def get_top_gainers(self, limit: int = 10) -> List[Dict]:
-        """Получение списка самых растущих акций"""
-        return []
-
-    async def get_top_losers(self, limit: int = 10) -> List[Dict]:
-        """Получение списка самых падающих акций"""
-        return []
-
-    def clear_cache(self):
-        """Очистка кэша"""
-        self.price_cache.clear()
-        self.info_cache.clear()
-        logger.info("🧹 Кэш цен очищен")
+    async def get_market_structure(self) -> Dict:
+        """Получение структуры рынков"""
+        return await moex_client.get_market_structure()
 
     async def close(self):
         """Закрытие соединений"""
@@ -247,16 +191,9 @@ class PriceService:
 
         logger.info("🔄 Закрытие сервиса цен...")
         self._closed = True
-        self.clear_cache()
-
-        try:
-            # Даем время на завершение текущих запросов
-            await asyncio.sleep(1)
-            await moex_client.close()
-        except Exception as e:
-            logger.error(f"Ошибка при закрытии сервиса цен: {e}")
-        finally:
-            logger.info("✅ Сервис цен закрыт")
+        self.price_cache.clear()
+        await moex_client.close()
+        logger.info("✅ Сервис цен закрыт")
 
 
 # Глобальный экземпляр

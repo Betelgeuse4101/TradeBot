@@ -82,12 +82,30 @@ def format_percent(value: Union[Decimal, str, int, float, None]) -> str:
         return "N/A"
 
     if dec_value > 0:
-        return f"🟢 +{dec_value:.2f}%"
+        return f"+{dec_value:.2f}%"
     elif dec_value < 0:
-        return f"🔴 {dec_value:.2f}%"
+        return f"{dec_value:.2f}%"
     else:
-        return f"⚪ 0.00%"
+        return f"0.00%"
 
+
+def normalize_currency(currency: str) -> str:
+    """Нормализация кода валюты"""
+    if not currency:
+        return 'RUB'
+
+    currency = currency.upper()
+
+    # MOEX использует SUR вместо RUB
+    if currency in ['SUR', 'RUR']:
+        return 'RUB'
+
+    # Стандартные валюты
+    if currency in ['USD', 'EUR', 'CNY', 'KZT', 'GBP', 'CHF', 'JPY']:
+        return currency
+
+    # По умолчанию RUB
+    return 'RUB'
 
 def format_large_number(value: Union[Decimal, str, int, float, None]) -> str:
     """Форматирование больших чисел (объемы, капитализация)"""
