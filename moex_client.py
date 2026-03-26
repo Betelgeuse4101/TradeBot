@@ -15,7 +15,6 @@ logger = get_logger('moex_client')
 class MOEXClient:
     """Клиент для работы с API Московской биржи (RESTful архитектура)"""
 
-    # Справочник соответствия типов активов движкам и рынкам
     ENGINE_MARKET_MAP = {
         'stock': ('stock', 'shares'),
         'bond': ('stock', 'bonds'),
@@ -36,7 +35,7 @@ class MOEXClient:
 
         self.request_count = 0
         self.last_request_reset = datetime.now()
-        self.max_requests_per_minute = 60
+        self.max_requests_per_minute = Config.MOEX_RATE_LIMIT_PER_MIN
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Получение или создание HTTP сессии"""
@@ -44,7 +43,7 @@ class MOEXClient:
             if self.session is None or self.session.closed:
                 timeout = aiohttp.ClientTimeout(
                     total=Config.MOEX_REQUEST_TIMEOUT,
-                    connect=15,
+                    connect=Config.MOEX_CONNECT_TIMEOUT,
                     sock_read=Config.MOEX_REQUEST_TIMEOUT - 5
                 )
                 connector = aiohttp.TCPConnector(
@@ -101,11 +100,9 @@ class MOEXClient:
                 if params is None:
                     params = {}
 
-                # Добавляем параметр для получения всех данных
                 if 'iss.only' not in params:
                     params['iss.only'] = 'securities,marketdata'
 
-                # Явно запрашиваем все доступные данные
                 params['iss.meta'] = 'off'
                 params['lang'] = 'ru'
 
@@ -115,21 +112,19 @@ class MOEXClient:
 
                     logger.info(f"⏱️ Время ответа: {elapsed:.2f}с, Статус: {response.status}")
 
-                    # Логируем URL с параметрами для отладки
                     actual_url = str(response.url)
                     logger.info(f"🔗 Фактический URL: {actual_url}")
 
                     if response.status == 200:
                         data = await response.json()
 
-                        # Логируем структуру ответа
                         if 'securities' in data:
                             securities_data = data['securities']
                             if 'data' in securities_data:
                                 boards = set()
                                 for row in securities_data['data']:
                                     if len(row) > 1:
-                                        boards.add(row[1])  # BOARDID
+                                        boards.add(row[1])
                                 logger.info(f"📊 Найденные режимы (BOARDID): {boards}")
 
                         if 'marketdata' in data:
@@ -174,28 +169,22 @@ class MOEXClient:
         symbol = symbol.upper()
         logger.debug(f"🔍 Определение engine/market для {symbol}, подсказка: {asset_type_hint}")
 
-        # Если есть подсказка типа актива - используем её
         if asset_type_hint and asset_type_hint in self.ENGINE_MARKET_MAP:
             result = self.ENGINE_MARKET_MAP[asset_type_hint]
             logger.debug(f"✅ Используем подсказку: {result}")
             return result
 
-        # Общие правила определения типа инструмента
         if symbol.endswith('F') and len(symbol) == 4 and symbol[0].isalpha():
-            # Фьючерсы обычно имеют формат: 3 буквы + F (например, SiF, RTSF)
             logger.debug(f"✅ Похоже на фьючерс")
             return 'futures', 'forts'
 
         if symbol.endswith('T') and len(symbol) == 4 and symbol[0].isalpha():
-            # Некоторые фьючерсы
             return 'futures', 'forts'
 
         if len(symbol) <= 4 and symbol.isalpha():
-            # Короткие буквенные тикеры обычно акции
             logger.debug(f"✅ Короткий буквенный тикер, скорее всего акция")
             return 'stock', 'shares'
 
-        # По умолчанию пробуем акции
         logger.debug(f"✅ Используем по умолчанию: акции")
         return 'stock', 'shares'
 
@@ -206,17 +195,14 @@ class MOEXClient:
 
         cache_key = f"info_{symbol}"
 
-        # Проверка кэша
         if cache_key in self.info_cache:
             data, timestamp = self.info_cache[cache_key]
             if datetime.now() - timestamp < timedelta(seconds=self.cache_ttl * 2):
                 logger.info(f"📦 Данные из кэша для {symbol}")
                 return data
 
-        # Определяем engine и market
         engine, market = self._determine_engine_market(symbol, asset_type_hint)
 
-        # Формируем URL
         url = f"{self.base_url}/engines/{engine}/markets/{market}/securities/{symbol}.json"
         logger.info(f"🔗 Пробуем URL: {url}")
 
@@ -232,7 +218,6 @@ class MOEXClient:
         if not response:
             logger.warning(f"❌ Не найдено на {engine}/{market}, пробуем альтернативы...")
 
-            # Пробуем все возможные комбинации
             alt_options = [
                 ('stock', 'shares'),
                 ('stock', 'bonds'),
@@ -259,7 +244,6 @@ class MOEXClient:
             logger.warning(f"❌ Инструмент {symbol} не найден нигде")
             return None
 
-        # Парсим ответ
         logger.info(f"📝 Парсинг ответа для {symbol}...")
         result = await self._parse_security_response(symbol, response, engine, market)
 
@@ -295,7 +279,6 @@ class MOEXClient:
 
             logger.debug(f"Блоки в ответе для {symbol}: {list(response.keys())}")
 
-            # Проходим по всем блокам
             for block_name, block_data in response.items():
                 if not isinstance(block_data, dict) or 'data' not in block_data:
                     continue
@@ -306,7 +289,6 @@ class MOEXClient:
                 if not columns or not rows:
                     continue
 
-                # Обработка description
                 if block_name == 'description':
                     for row in rows:
                         if isinstance(row, list) and len(row) >= 2:
@@ -316,7 +298,6 @@ class MOEXClient:
                                 result['description'][key] = value
                                 result['found'] = True
 
-                # Обработка securities - базовая информация об инструменте
                 elif block_name == 'securities':
                     for row in rows:
                         if not isinstance(row, list):
@@ -324,16 +305,13 @@ class MOEXClient:
 
                         row_dict = dict(zip(columns, row))
 
-                        # Сохраняем информацию из любой строки
                         if row_dict.get('SHORTNAME'):
                             result['name'] = str(row_dict['SHORTNAME'])
                         elif row_dict.get('SECNAME'):
                             result['name'] = str(row_dict['SECNAME'])
 
-                        # Определяем валюту
                         if row_dict.get('CURRENCYID'):
                             currency = str(row_dict['CURRENCYID'])
-                            # Нормализуем валюту (SUR = RUB в MOEX)
                             if currency in ['SUR', 'RUR']:
                                 currency = 'RUB'
                             result['currency'] = currency
@@ -349,12 +327,9 @@ class MOEXClient:
 
                         result['found'] = True
 
-                # Обработка marketdata - поиск цены
                 elif block_name == 'marketdata':
-                    # Приоритетные режимы торгов для разных типов инструментов
                     priority_boards = ['TQBR', 'TQTF', 'TQBD', 'CETS', 'FUT']
 
-                    # Сначала ищем в приоритетных режимах
                     for priority_board in priority_boards:
                         for row in rows:
                             if not isinstance(row, list):
@@ -364,12 +339,10 @@ class MOEXClient:
                             board_id = row_dict.get('BOARDID', '')
 
                             if board_id == priority_board:
-                                # Сохраняем все поля
                                 for key, value in row_dict.items():
                                     if value is not None:
                                         result['market_data'][key] = value
 
-                                # Ищем цену
                                 price = self._extract_price_from_row(row_dict)
                                 if price:
                                     result['current_price'] = price
@@ -380,7 +353,6 @@ class MOEXClient:
                         if result.get('current_price'):
                             break
 
-                    # Если не нашли в приоритетных, ищем в любом режиме
                     if not result.get('current_price'):
                         for row in rows:
                             if not isinstance(row, list):
@@ -396,7 +368,6 @@ class MOEXClient:
                                 logger.debug(f"💰 Цена найдена в режиме {board_id}: {price}")
                                 break
 
-            # Если цена не найдена в marketdata, пробуем PREVPRICE из securities
             if not result.get('current_price') and 'securities' in response:
                 securities_data = response['securities']
                 columns = securities_data.get('columns', [])
@@ -429,9 +400,8 @@ class MOEXClient:
     def _extract_price_from_row(self, row_dict: Dict) -> Optional[Decimal]:
         """Извлечение цены из строки marketdata (общий метод)"""
 
-        # Приоритетные поля для цены
         price_fields = [
-            'LCURRENTPRICE',  # Текущая цена (наиболее актуальная)
+            'LCURRENTPRICE',  # Текущая цена
             'LAST',  # Последняя сделка
             'MARKETPRICE',  # Рыночная цена
             'CLOSEPRICE',  # Цена закрытия
@@ -474,20 +444,17 @@ class MOEXClient:
         symbol = symbol.upper().strip()
         cache_key = f"price_{symbol}"
 
-        # Проверка кэша
         if cache_key in self.cache:
             price, timestamp = self.cache[cache_key]
             if datetime.now() - timestamp < timedelta(seconds=self.cache_ttl):
                 logger.info(f"📦 Цена из кэша для {symbol}: {price}")
                 return price
 
-        # Получаем информацию
         info = await self.get_security_info(symbol, asset_type_hint)
         if not info:
             logger.warning(f"❌ Не удалось получить информацию для {symbol}")
             return None
 
-        # Извлекаем цену
         price = info.get('current_price')
 
         if price and price > 0:
@@ -514,20 +481,16 @@ class MOEXClient:
 
         result = {}
 
-        # Используем asyncio.gather для параллельных запросов
         tasks = []
         for symbol in symbols:
-            # Получаем тип актива для символа, если есть
             asset_type = None
             if asset_types and symbol in asset_types:
                 asset_type = asset_types[symbol]
 
             tasks.append(self.get_current_price(symbol, asset_type))
 
-        # Выполняем все запросы параллельно
         prices = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Обрабатываем результаты
         for i, symbol in enumerate(symbols):
             price = prices[i]
             if isinstance(price, Exception):
@@ -560,5 +523,4 @@ class MOEXClient:
                     self.session = None
 
 
-# Глобальный экземпляр
 moex_client = MOEXClient()

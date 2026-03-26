@@ -38,7 +38,6 @@ async def show_alerts(message: Message):
         )
         return
 
-    # Разделяем на активные и сработавшие
     active_alerts = [a for a in alerts if a['is_active'] and not a['is_triggered']]
     triggered_alerts = [a for a in alerts if a['is_triggered']]
 
@@ -72,7 +71,6 @@ async def new_alert_start(callback: CallbackQuery, state: FSMContext):
         )
         return
 
-    # Показываем выбор портфеля
     buttons = []
     for p in portfolios:
         buttons.append([
@@ -111,10 +109,8 @@ async def create_portfolio_alert(callback: CallbackQuery, state: FSMContext):
         portfolio_id=portfolio_id
     )
 
-    # Проверяем, есть ли активы в портфеле
     assets = await AssetRepository.get_portfolio_assets(portfolio_id)
     if assets:
-        # Если есть активы, показываем выбор: портфель или конкретный актив
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="📊 Весь портфель", callback_data=f"alert_target_portfolio_{portfolio_id}"),
@@ -240,19 +236,16 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(AlertState.waiting_for_target_value)
 
-    # Получаем текущее значение для подсказки
     user_id = callback.from_user.id
     current_value = None
 
     data = await state.get_data()
 
     if data['alert_type'] == 'portfolio':
-        # Для портфеля
         portfolio_id = target_id
         assets = await AssetRepository.get_portfolio_assets(portfolio_id)
 
         if assets:
-            # Обновляем цены
             await price_service.update_portfolio_prices(portfolio_id)
             portfolio_value = await price_service.calculate_portfolio_value(portfolio_id, assets)
             current_value = portfolio_value['total_value']
@@ -264,7 +257,6 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
         else:
             hint = f"Введите желаемую стоимость портфеля (текущая: {format_money(current_value)}):"
     else:
-        # Для актива
         asset_id = target_id
         asset = await AssetRepository.get(asset_id)
 
@@ -291,37 +283,33 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
 @log_function_call()
 async def process_alert_target(message: Message, state: FSMContext):
     """Обработка целевого значения"""
-    target_text = message.text.strip()
+    target_text = message.text.strip().replace(',', '.')
 
     data = await state.get_data()
     condition_type = data['condition_type']
     user_id = message.from_user.id
 
     if condition_type == 'percent':
-        # Парсим процент
         try:
-            if target_text.startswith('+'):
-                target_value = Decimal(target_text[1:])
-            elif target_text.startswith('-'):
-                target_value = Decimal(target_text)
-            else:
-                target_value = Decimal(target_text)
+            target_value = Decimal(target_text.replace('+', ''))
 
-            # Для процентов допускаются отрицательные значения
+            if data['direction'] == 'down' and target_value > 0:
+                target_value = -target_value
+            elif data['direction'] == 'up' and target_value < 0:
+                target_value = abs(target_value)
+
             if abs(target_value) > 1000:
                 await message.answer("❌ Слишком большой процент (макс. 1000%)")
                 return
         except:
-            await message.answer("❌ Введите число (например, +10 или -5):")
+            await message.answer("❌ Введите число (например, 10 или 5.5):")
             return
     else:
-        # Парсим цену
         target_value = parse_decimal(target_text)
         if not validate_positive_decimal(target_value):
             await message.answer("❌ Введите положительное число:")
             return
 
-    # Создаем уведомление
     alert_id = None
 
     if data['alert_type'] == 'portfolio':

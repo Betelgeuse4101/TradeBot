@@ -2,13 +2,14 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter
 from typing import Optional, Any
 from logger import get_logger
+from config import Config
 import asyncio
 
 logger = get_logger('callback_utils')
 
 
 async def safe_callback_answer(callback: CallbackQuery, text: Optional[str] = None, show_alert: bool = False,
-                               max_retries: int = 3) -> bool:
+                               max_retries: int = Config.TELEGRAM_MAX_RETRIES) -> bool:
     """
     Безопасный ответ на callback с обработкой устаревших запросов и сетевых ошибок
 
@@ -51,7 +52,7 @@ async def safe_edit_message(
         callback: CallbackQuery,
         text: str,
         reply_markup: Optional[Any] = None,
-        max_retries: int = 3,
+        max_retries: int = Config.TELEGRAM_MAX_RETRIES,
         **kwargs
 ) -> bool:
     """
@@ -73,10 +74,8 @@ async def safe_edit_message(
             return True
         except TelegramBadRequest as e:
             if "message is not modified" in str(e):
-                # Сообщение не изменилось - это нормально
                 return True
             elif "message can't be edited" in str(e):
-                # Не можем редактировать, отправляем новое
                 try:
                     await callback.message.answer(text, reply_markup=reply_markup, **kwargs)
                     return True
@@ -102,7 +101,7 @@ async def safe_edit_message(
     return False
 
 
-async def safe_delete_message(message: Message, max_retries: int = 3) -> bool:
+async def safe_delete_message(message: Message, max_retries: int = Config.TELEGRAM_MAX_RETRIES) -> bool:
     """
     Безопасное удаление сообщения
 
@@ -144,7 +143,7 @@ async def safe_send_message(
         callback: CallbackQuery,
         text: str,
         reply_markup: Optional[Any] = None,
-        max_retries: int = 3,
+        max_retries: int = Config.TELEGRAM_MAX_RETRIES,
         **kwargs
 ) -> Optional[Message]:
     """

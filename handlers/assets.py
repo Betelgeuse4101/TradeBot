@@ -48,7 +48,7 @@ async def add_asset_start(callback: CallbackQuery, state: FSMContext):
     await safe_edit_message(
         callback,
         f"➕ <b>Добавление актива в портфель '{portfolio['name']}'</b>\n\n"
-        f"Введите ТИКЕР актива (например, SBER, GAZP, YNDX, FXUS):\n\n"
+        f"Введите ТИКЕР актива (например, SBER, GAZP, YDEX):\n\n"
         f"<i>Только латинские буквы, без поиска по названию</i>",
         reply_markup=Keyboards.get_cancel_keyboard()
     )
@@ -60,7 +60,6 @@ async def process_asset_symbol(message: Message, state: FSMContext):
     """Обработка символа актива"""
     symbol = message.text.strip().upper()
 
-    # Проверка на допустимые символы
     if not symbol or len(symbol) < 1 or len(symbol) > 20:
         await message.answer("❌ Некорректный тикер. Введите правильный тикер (например, SBER):")
         return
@@ -71,7 +70,6 @@ async def process_asset_symbol(message: Message, state: FSMContext):
 
     status_msg = await message.answer(f"⏳ Проверяем тикер {symbol} на MOEX...")
 
-    # Проверяем существование на MOEX и получаем информацию
     is_valid, info = await price_service.validate_symbol_with_info(symbol)
 
     if not is_valid or not info:
@@ -80,14 +78,12 @@ async def process_asset_symbol(message: Message, state: FSMContext):
             f"Проверьте правильность тикера и попробуйте снова:\n"
             f"• SBER - Сбербанк\n"
             f"• GAZP - Газпром\n"
-            f"• YNDX - Яндекс\n"
-            f"• FXUS - ETF на американские акции\n"
-            f"• USD000UTSTOM - Доллар США",
+            f"• YDEX - Яндекс\n",
             reply_markup=Keyboards.get_cancel_keyboard()
         )
         return
 
-    # Получаем текущую цену
+    # При добавлении нового актива запрашиваем актуальную цену без кэша
     current_price = await price_service.get_price(symbol, use_cache=False)
 
     await state.update_data(
@@ -114,7 +110,6 @@ async def process_asset_symbol(message: Message, state: FSMContext):
             reply_markup=Keyboards.get_cancel_keyboard()
         )
     else:
-        # Если не удалось получить цену, показываем информацию и просим ввести количество
         await state.update_data(use_manual_price=False)
         await state.set_state(AssetState.waiting_for_quantity)
 
@@ -142,13 +137,10 @@ async def process_asset_quantity(message: Message, state: FSMContext):
     await state.update_data(quantity=quantity)
     data = await state.get_data()
 
-    # Если у нас уже есть цена, показываем подтверждение
     if data.get('current_price'):
         await show_confirmation(message, state)
     else:
-        # Пытаемся получить цену еще раз
         status_msg = await message.answer("⏳ Получаем актуальную цену...")
-
         current_price = await price_service.get_price(data['symbol'], use_cache=False)
 
         if current_price and current_price > 0:
@@ -244,11 +236,6 @@ async def list_assets(callback: CallbackQuery):
     await safe_callback_answer(callback)
 
     portfolio_id = int(callback.data.replace("list_assets_", ""))
-
-    # Обновляем цены если рынок открыт
-    if price_service._is_market_open():
-        await price_service.update_portfolio_prices(portfolio_id)
-
     assets = await AssetRepository.get_portfolio_assets(portfolio_id)
 
     if not assets:
@@ -259,7 +246,6 @@ async def list_assets(callback: CallbackQuery):
         )
         return
 
-    # Рассчитываем прибыль для каждого актива
     for asset in assets:
         quantity = asset['quantity']
         purchase_price = asset['purchase_price']
@@ -291,27 +277,14 @@ async def view_asset(callback: CallbackQuery):
         await safe_edit_message(callback, "❌ Актив не найден")
         return
 
-    # Обновляем цену если рынок открыт
-    if price_service._is_market_open() and asset['current_price']:
-        current_price = await price_service.get_price(asset['symbol'], use_cache=False)
-        if current_price:
-            await AssetRepository.update_price(asset_id, current_price)
-            asset['current_price'] = current_price
-
-    # Детальный расчет
-    details = await portfolio_service.calculate_asset_details(asset_id, update_price=False)
+    details = await portfolio_service.calculate_asset_details(asset_id)
 
     asset_types = {
-        'stock': 'Акция',
-        'bond': 'Облигация',
-        'etf': 'ETF',
-        'currency': 'Валюта',
-        'futures': 'Фьючерс',
-        'other': 'Другое'
+        'stock': 'Акция', 'bond': 'Облигация', 'etf': 'ETF',
+        'currency': 'Валюта', 'futures': 'Фьючерс', 'other': 'Другое'
     }
 
     asset_type_name = asset_types.get(asset['asset_type'], asset['asset_type'])
-
     market_status = "🟢" if price_service._is_market_open() else "🔴"
 
     response = f"""
@@ -340,7 +313,7 @@ async def view_asset(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("refresh_asset_"))
 @log_function_call()
 async def refresh_asset_price(callback: CallbackQuery):
-    """Обновление цены актива"""
+    """Обновление цены актива (форсированно)"""
     await safe_callback_answer(callback, "🔄 Обновляем цену...")
 
     asset_id = int(callback.data.replace("refresh_asset_", ""))
@@ -358,7 +331,6 @@ async def refresh_asset_price(callback: CallbackQuery):
     else:
         await safe_callback_answer(callback, "❌ Не удалось обновить цену")
 
-    # Возвращаемся к просмотру актива
     await view_asset(callback)
 
 
@@ -454,9 +426,6 @@ async def delete_asset(callback: CallbackQuery):
         await safe_edit_message(callback, "❌ Актив не найден")
         return
 
-    portfolio_id = asset['portfolio_id']
-
-    # Подтверждение удаления
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete_asset_{asset_id}"),

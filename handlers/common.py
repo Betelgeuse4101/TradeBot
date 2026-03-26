@@ -91,19 +91,3 @@ async def cancel_action(callback: CallbackQuery, state: FSMContext):
         "❌ Действие отменено",
         reply_markup=Keyboards.get_main_menu()
     )
-
-
-@router.callback_query(F.data == "skip")
-@log_function_call()
-async def skip_action(callback: CallbackQuery, state: FSMContext):
-    """Пропуск шага"""
-    await safe_callback_answer(callback, "⏭️ Шаг пропущен")
-    await state.update_data(skipped=True)
-
-    # Пытаемся удалить сообщение
-    await safe_delete_message(callback.message)
-
-    await callback.message.answer(
-        "⏭️ Шаг пропущен",
-        reply_markup=Keyboards.get_main_menu()
-    )

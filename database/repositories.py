@@ -77,6 +77,13 @@ class PortfolioRepository:
         return [dict(row) for row in rows]
 
     @staticmethod
+    async def check_name_exists(user_id: int, name: str) -> bool:
+        """Проверка, существует ли портфель с таким именем у пользователя"""
+        query = "SELECT 1 FROM portfolios WHERE user_id = $1 AND name = $2"
+        result = await db.fetchval(query, user_id, name)
+        return result is not None
+
+    @staticmethod
     async def update_name(portfolio_id: int, name: str) -> bool:
         """Обновление названия портфеля"""
         query = """
@@ -141,29 +148,28 @@ class AssetRepository:
     async def add(portfolio_id: int, symbol: str, name: str, asset_type: str,
                   quantity: Decimal, purchase_price: Decimal, currency: str = 'RUB',
                   sector: str = None, notes: str = None) -> Optional[int]:
-        """Добавление актива в портфель"""
+        """Добавление актива в портфель (с усреднением цены при совпадении)"""
 
-        # Валидация
         if quantity <= 0:
             raise ValueError("Количество должно быть положительным")
         if purchase_price <= 0:
             raise ValueError("Цена покупки должна быть положительной")
 
         query = """
-        INSERT INTO assets (portfolio_id, symbol, name, asset_type, quantity, 
-                           purchase_price, currency, sector, notes)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (portfolio_id, symbol) DO UPDATE SET
-            quantity = EXCLUDED.quantity,
-            purchase_price = EXCLUDED.purchase_price,
-            updated_at = CURRENT_TIMESTAMP
-        RETURNING id
-        """
+            INSERT INTO assets (portfolio_id, symbol, name, asset_type, quantity, 
+                               purchase_price, currency, sector, notes)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (portfolio_id, symbol) DO UPDATE SET
+                purchase_price = (assets.purchase_price * assets.quantity + EXCLUDED.purchase_price * EXCLUDED.quantity) / (assets.quantity + EXCLUDED.quantity),
+                quantity = assets.quantity + EXCLUDED.quantity,
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING id
+            """
         try:
             asset_id = await db.fetchval(query, portfolio_id, symbol.upper(), name,
                                          asset_type, quantity, purchase_price,
                                          currency, sector, notes)
-            logger.info(f"➕ Актив {symbol} добавлен в портфель {portfolio_id}")
+            logger.info(f"➕ Актив {symbol} добавлен (или усреднен) в портфель {portfolio_id}")
             return asset_id
         except Exception as e:
             logger.error(f"Ошибка добавления актива: {e}")

@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional
 from decimal import Decimal
 import asyncio
+from config import Config
 from datetime import datetime, timedelta
 
 from database.repositories import AlertRepository, PortfolioRepository, AssetRepository
@@ -19,7 +20,7 @@ class AlertService:
     def __init__(self, bot: Bot):
         self.bot = bot
         self.is_running = False
-        self.check_interval = 60  # секунд
+        self.check_interval = Config.ALERT_CHECK_INTERVAL
         self.notification_cooldown = {}  # Для защиты от спама
 
     async def start(self):
@@ -27,41 +28,13 @@ class AlertService:
         self.is_running = True
         logger.info("🚀 Запуск сервиса уведомлений")
 
-        # Запускаем периодическое обновление цен
-        asyncio.create_task(self._update_prices_periodically())
-
         while self.is_running:
             try:
                 await self.check_alerts()
                 await asyncio.sleep(self.check_interval)
             except Exception as e:
                 logger.error(f"Ошибка в сервисе уведомлений: {e}")
-                await asyncio.sleep(60)
-
-    async def _update_prices_periodically(self):
-        """Периодическое обновление цен (каждые 4 часа)"""
-        while self.is_running:
-            try:
-                logger.info("🔄 Запуск периодического обновления цен")
-
-                # Получаем все активы из БД
-                assets = await AssetRepository.get_all_assets()
-
-                # Группируем по портфелям для эффективного обновления
-                portfolio_ids = set(a['portfolio_id'] for a in assets)
-
-                for portfolio_id in portfolio_ids:
-                    await price_service.update_portfolio_prices(portfolio_id)
-                    await asyncio.sleep(1)  # Небольшая пауза между портфелями
-
-                logger.info(f"✅ Периодическое обновление цен завершено, обновлено {len(portfolio_ids)} портфелей")
-
-                # Ждем 4 часа
-                await asyncio.sleep(4 * 60 * 60)
-
-            except Exception as e:
-                logger.error(f"Ошибка при периодическом обновлении цен: {e}")
-                await asyncio.sleep(60)  # При ошибке ждем минуту и пробуем снова
+                await asyncio.sleep(Config.ALERT_ERROR_DELAY)
 
     async def stop(self):
         """Остановка сервиса"""
@@ -77,7 +50,6 @@ class AlertService:
 
         logger.info(f"🔍 Проверка {len(alerts)} уведомлений")
 
-        # Группируем уведомления по пользователям для оптимизации
         alerts_by_user = {}
         for alert in alerts:
             user_id = alert['user_id']
@@ -92,11 +64,10 @@ class AlertService:
         """Проверка уведомлений конкретного пользователя"""
         for alert in alerts:
             try:
-                # Проверка на cooldown (не чаще раза в 5 минут для одного уведомления)
                 cooldown_key = f"{user_id}_{alert['id']}"
                 if cooldown_key in self.notification_cooldown:
                     last_check = self.notification_cooldown[cooldown_key]
-                    if datetime.now() - last_check < timedelta(minutes=5):
+                    if datetime.now() - last_check < timedelta(minutes=Config.ALERT_COOLDOWN_MINUTES):
                         continue
 
                 await self.check_alert(alert)
@@ -108,7 +79,6 @@ class AlertService:
     async def check_alert(self, alert: Dict[str, Any]):
         """Проверка конкретного уведомления"""
         alert_id = alert['id']
-        user_id = alert['user_id']
         condition_type = alert['condition_type']
         direction = alert['direction']
         target_value = alert['target_value']
@@ -118,28 +88,20 @@ class AlertService:
         asset_symbol = None
 
         if alert['alert_type'] == 'portfolio':
-            # Уведомление по портфелю
             portfolio_id = alert['portfolio_id']
 
-            # Получаем активы портфеля
-            assets = await AssetRepository.get_portfolio_assets(portfolio_id)
+            summary = await portfolio_service.calculate_portfolio_summary(portfolio_id)
 
-            if not assets:
+            if not summary or summary.get('assets_count', 0) == 0:
                 logger.debug(f"Портфель {portfolio_id} пуст, пропускаем уведомление {alert_id}")
                 return
 
-            # Обновляем цены если нужно
-            need_update = any(not a['current_price'] for a in assets)
-            if need_update:
-                await price_service.update_portfolio_prices(portfolio_id)
-                assets = await AssetRepository.get_portfolio_assets(portfolio_id)
-
-            # Считаем стоимость портфеля
-            portfolio_value = await price_service.calculate_portfolio_value(portfolio_id, assets)
-            current_value = portfolio_value['total_value']
+            if condition_type == 'price':
+                current_value = summary['total_value']
+            else:
+                current_value = summary['total_profit_percent']
 
         else:
-            # Уведомление по активу
             asset_id = alert['asset_id']
             asset = await AssetRepository.get(asset_id)
 
@@ -149,24 +111,14 @@ class AlertService:
                 return
 
             asset_symbol = asset['symbol']
+            current_price = await price_service.get_price(asset['symbol'])
+
+            price = current_price or asset['current_price'] or asset['purchase_price']
 
             if condition_type == 'price':
-                # Обновляем цену
-                current_price = await price_service.get_price(asset['symbol'])
-                if current_price:
-                    await AssetRepository.update_price(asset_id, current_price)
-                    asset['current_price'] = current_price
-                current_value = asset['current_price'] or asset['purchase_price']
-            else:  # percent
-                # Обновляем цену для расчета процента
-                current_price = await price_service.get_price(asset['symbol'])
-                if current_price:
-                    await AssetRepository.update_price(asset_id, current_price)
-                    asset['current_price'] = current_price
-
-                # Рассчитываем процент изменения от цены покупки
+                current_value = price
+            else:
                 if asset['purchase_price'] > 0:
-                    price = asset['current_price'] or asset['purchase_price']
                     current_value = ((price - asset['purchase_price']) / asset['purchase_price']) * 100
                 else:
                     current_value = Decimal('0')
@@ -174,26 +126,14 @@ class AlertService:
         if current_value is None:
             return
 
-        # Сохраняем текущее значение
         await AlertRepository.update_current_value(alert_id, current_value)
 
-        # Проверяем условие
         triggered = False
 
-        if condition_type == 'price':
-            if direction == 'up' and current_value >= target_value:
-                triggered = True
-                logger.info(f"🎯 Уведомление {alert_id} сработало: {current_value} >= {target_value}")
-            elif direction == 'down' and current_value <= target_value:
-                triggered = True
-                logger.info(f"🎯 Уведомление {alert_id} сработало: {current_value} <= {target_value}")
-        else:  # percent
-            if direction == 'up' and current_value >= target_value:
-                triggered = True
-                logger.info(f"🎯 Уведомление {alert_id} сработало: {current_value}% >= {target_value}%")
-            elif direction == 'down' and current_value <= target_value:
-                triggered = True
-                logger.info(f"🎯 Уведомление {alert_id} сработало: {current_value}% <= {target_value}%")
+        if direction == 'up' and current_value >= target_value:
+            triggered = True
+        elif direction == 'down' and current_value <= target_value:
+            triggered = True
 
         if triggered:
             await self.trigger_alert(alert, current_value, current_price)
@@ -203,16 +143,13 @@ class AlertService:
         alert_id = alert['id']
         user_id = alert['user_id']
 
-        # Отмечаем как сработавшее
         await AlertRepository.mark_triggered(alert_id)
 
-        # Формируем сообщение
         if alert['alert_type'] == 'portfolio':
             text = await self._format_portfolio_alert(alert, current_value)
         else:
             text = await self._format_asset_alert(alert, current_value, current_price)
 
-        # Отправляем уведомление
         try:
             await self.bot.send_message(user_id, text)
             logger.info(f"📨 Отправлено уведомление #{alert_id} пользователю {user_id}")
@@ -231,7 +168,6 @@ class AlertService:
             target_text = f"{float(alert['target_value']):+.1f}%"
             current_text = f"{float(current_value):+.1f}%"
 
-        # Получаем детали портфеля для более информативного сообщения
         portfolio_id = alert['portfolio_id']
         portfolio = await PortfolioRepository.get(portfolio_id)
 

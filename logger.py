@@ -302,7 +302,6 @@ def log_function_call(logger=None):
                 logger.debug(f"✅ {func.__name__} завершена")
                 return result
             except aiogram.exceptions.TelegramBadRequest as e:
-                # Игнорируем ошибки с устаревшими callback'ами
                 if "query is too old" in str(e) or "query ID is invalid" in str(e):
                     logger.debug(f"⚠️ Пропуск устаревшего callback в {func.__name__}: {e}")
                     return None

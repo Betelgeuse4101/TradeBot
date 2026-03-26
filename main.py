@@ -25,8 +25,6 @@ class CryptoBot:
 
     def __init__(self):
         self.storage = MemoryStorage()
-
-        # Создаем простую сессию БЕЗ указания timeout
         session = AiohttpSession()
 
         self.bot = Bot(
@@ -38,12 +36,12 @@ class CryptoBot:
         self.alert_service = AlertService(self.bot)
         self._polling_task = None
         self._alert_task = None
+        self._price_updater_task = None
         self._retry_count = 0
         self._max_retries = 10
         self._polling_timeout = Config.TELEGRAM_POLLING_TIMEOUT
         self._is_shutting_down = False
 
-        # Регистрация роутеров
         self.dp.include_router(common.router)
         self.dp.include_router(portfolio.router)
         self.dp.include_router(assets.router)
@@ -55,21 +53,20 @@ class CryptoBot:
         logger.info("🚀 ЗАПУСК ИНВЕСТИЦИОННОГО БОТА С MOEX")
         logger.info("=" * 60)
 
-        # Подключение к БД
         await db.connect()
-
-        # Удаление вебхука с повторными попытками
         await self._safe_delete_webhook()
 
         # Запуск сервиса уведомлений
         self._alert_task = asyncio.create_task(self.alert_service.start())
         logger.info("✅ Сервис уведомлений запущен")
 
-        # Запуск поллинга с обработкой ошибок
+        # Запуск фонового обновления цен
+        self._price_updater_task = asyncio.create_task(price_service.start_updater())
+        logger.info("✅ Фоновое обновление цен запущено")
+
         logger.info("📡 Запуск поллинга...")
         self._polling_task = asyncio.create_task(self._safe_polling())
 
-        # Ждем завершения задач
         try:
             await self._polling_task
         except asyncio.CancelledError:
@@ -83,7 +80,6 @@ class CryptoBot:
         """Безопасное удаление вебхука с повторными попытками"""
         for attempt in range(self._max_retries):
             try:
-                # Используем таймаут для запроса
                 await asyncio.wait_for(
                     self.bot.delete_webhook(drop_pending_updates=True),
                     timeout=self._polling_timeout
@@ -109,7 +105,6 @@ class CryptoBot:
                 await asyncio.sleep(wait_time)
             else:
                 logger.error("❌ Не удалось удалить вебхук после всех попыток")
-                # Продолжаем работу, возможно вебхук уже удален
 
     async def _safe_polling(self):
         """Безопасный запуск поллинга с автоматическим восстановлением"""
@@ -118,25 +113,23 @@ class CryptoBot:
 
         while not self._is_shutting_down:
             try:
-                # Запускаем поллинг с базовыми параметрами
                 await self.dp.start_polling(
                     self.bot,
                     handle_signals=False,
                     close_bot_session=False,
                     polling_timeout=self._polling_timeout
                 )
-                consecutive_errors = 0  # Сброс счетчика при успехе
+                consecutive_errors = 0
                 break
 
             except (ClientError, asyncio.TimeoutError, aiohttp.ClientError, TelegramNetworkError, socket.gaierror) as e:
                 consecutive_errors += 1
                 self._retry_count += 1
-                wait_time = min(2 ** min(self._retry_count, 6), 120)  # Максимум 120 секунд
+                wait_time = min(2 ** min(self._retry_count, 6), 120)
 
                 logger.error(f"🌐 Сетевая ошибка в поллинге ({consecutive_errors}/{max_consecutive_errors}): {e}")
                 logger.info(f"⏳ Повторная попытка через {wait_time} секунд...")
 
-                # Проверяем соединение
                 if not await self._check_internet_connection():
                     logger.warning("⚠️ Нет подключения к интернету, ждем...")
                     wait_time = 30
@@ -144,8 +137,7 @@ class CryptoBot:
                 await asyncio.sleep(wait_time)
 
                 if consecutive_errors >= max_consecutive_errors:
-                    logger.error(
-                        f"❌ Слишком много последовательных ошибок ({consecutive_errors}), перезапускаем сессию...")
+                    logger.error(f"❌ Слишком много последовательных ошибок ({consecutive_errors}), перезапускаем сессию...")
                     await self._recreate_session()
                     consecutive_errors = 0
 
@@ -160,13 +152,10 @@ class CryptoBot:
     async def _recreate_session(self):
         """Пересоздание сессии при проблемах"""
         try:
-            # Закрываем старую сессию
             if self.bot.session and not self.bot.session.closed:
                 await self.bot.session.close()
 
-            # Создаем новую простую сессию
             session = AiohttpSession()
-
             self.bot.session = session
             logger.info("✅ Сессия Telegram пересоздана")
             self._retry_count = 0
@@ -177,7 +166,6 @@ class CryptoBot:
     async def _check_internet_connection(self) -> bool:
         """Проверка подключения к интернету"""
         try:
-            # Пробуем подключиться к Google DNS
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection('8.8.8.8', 53),
                 timeout=5
@@ -196,12 +184,13 @@ class CryptoBot:
         self._is_shutting_down = True
         logger.info("🛑 Остановка бота...")
 
-        # Отменяем задачи
         tasks_to_cancel = []
         if self._polling_task and not self._polling_task.done():
             tasks_to_cancel.append(self._polling_task)
         if self._alert_task and not self._alert_task.done():
             tasks_to_cancel.append(self._alert_task)
+        if self._price_updater_task and not self._price_updater_task.done():
+            tasks_to_cancel.append(self._price_updater_task)
 
         for task in tasks_to_cancel:
             task.cancel()
@@ -210,14 +199,10 @@ class CryptoBot:
             except asyncio.CancelledError:
                 pass
 
-        # Остановка сервиса уведомлений
         await self.alert_service.stop()
-
-        # Закрытие соединений
         await db.disconnect()
         await price_service.close()
 
-        # Закрываем сессию бота
         try:
             if self.bot.session and not self.bot.session.closed:
                 await asyncio.wait_for(self.bot.session.close(), timeout=10)
@@ -231,13 +216,10 @@ class CryptoBot:
 
 async def main():
     """Главная функция"""
-    # Настройка логгеров
     setup_module_loggers()
     logger.info("🚀 Запуск приложения...")
 
     bot = CryptoBot()
-
-    # Настройка обработки сигналов
     loop = asyncio.get_running_loop()
 
     def signal_handler():
@@ -246,7 +228,6 @@ async def main():
             if task is not asyncio.current_task():
                 task.cancel()
 
-    # Регистрируем обработчики сигналов (только для Unix-like систем)
     if sys.platform != 'win32':
         try:
             for sig in (signal.SIGTERM, signal.SIGINT):
@@ -254,7 +235,6 @@ async def main():
         except NotImplementedError:
             logger.warning("⚠️ Обработка сигналов не поддерживается на этой платформе")
     else:
-        # Для Windows используем другой подход
         logger.info("🪟 Windows: используем альтернативную обработку сигналов")
         try:
             signal.signal(signal.SIGINT, lambda s, f: asyncio.create_task(shutdown(bot)))

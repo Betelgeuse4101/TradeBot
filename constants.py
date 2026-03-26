@@ -18,7 +18,6 @@ MOEX_MARKETS = {
     'futures': 'forts'      # фьючерсы
 }
 
-# Типы активов
 ASSET_TYPES = {
     'stock': 'Акция',
     'bond': 'Облигация',
@@ -28,37 +27,29 @@ ASSET_TYPES = {
     'other': 'Другое'
 }
 
-# Валюты
 CURRENCIES = ['RUB', 'USD', 'EUR', 'CNY', 'KZT']
 
-# Направления уведомлений
 ALERT_DIRECTION_UP: str = "up"
 ALERT_DIRECTION_DOWN: str = "down"
 
-# Эмодзи для разных типов уведомлений
 DIRECTION_ICONS: Dict[str, str] = {
     ALERT_DIRECTION_UP: "📈",
     ALERT_DIRECTION_DOWN: "📉"
 }
 
-# Цветовые индикаторы для изменений цен
 CHANGE_ICONS: Dict[str, str] = {
     "positive": "🟢",
     "negative": "🔴"
 }
 
-# Пути к файлам
 ALERTS_FILE: str = "alerts.json"
 
-# Форматы для логирования
 LOG_DETAILED_FORMAT: str = '%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
 LOG_SIMPLE_FORMAT: str = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 LOG_DATE_FORMAT: str = '%Y-%m-%d %H:%M:%S'
 
-# Разделители для логов
 LOG_SEPARATOR: str = "=" * 80
 
-# Сообщения для пользователя
 WELCOME_MESSAGE: str = """
 🤖 <b>Инвестиционный бот с MOEX</b>
 
@@ -70,12 +61,6 @@ WELCOME_MESSAGE: str = """
 • Уведомления о достижении целей
 • Статистика и аналитика портфеля
 • Актуальные котировки с MOEX
-
-📊 <b>Поддерживаемые активы:</b>
-• Акции (SBER, GAZP, YNDX и др.)
-• Облигации
-• ETF (FXUS, FXIT и др.)
-• Валюты (USD/RUB, EUR/RUB)
 
 👇 <b>Используйте кнопки ниже для навигации</b>
 """

@@ -144,22 +144,6 @@ class Database:
             )
             """,
             """
-            CREATE TABLE IF NOT EXISTS market_data (
-                id SERIAL PRIMARY KEY,
-                symbol TEXT NOT NULL UNIQUE,
-                name TEXT,
-                sector TEXT,
-                industry TEXT,
-                market_cap DECIMAL(20, 2),
-                volume_24h DECIMAL(20, 0),
-                high_52w DECIMAL(20, 8),
-                low_52w DECIMAL(20, 8),
-                dividend_yield DECIMAL(10, 4),
-                pe_ratio DECIMAL(10, 4),
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            """
             CREATE INDEX IF NOT EXISTS idx_assets_portfolio ON assets(portfolio_id);
             CREATE INDEX IF NOT EXISTS idx_assets_symbol ON assets(symbol);
             CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(asset_type);
@@ -167,7 +151,6 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(is_active) WHERE is_active = true;
             CREATE INDEX IF NOT EXISTS idx_alerts_triggered ON alerts(is_triggered) WHERE is_triggered = false;
             CREATE INDEX IF NOT EXISTS idx_price_history_symbol ON price_history(symbol);
-            CREATE INDEX IF NOT EXISTS idx_market_data_symbol ON market_data(symbol);
             """
         ]
 
@@ -180,5 +163,4 @@ class Database:
         logger.info("✅ Таблицы проверены/созданы")
 
 
-# Глобальный экземпляр БД
 db = Database()
