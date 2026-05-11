@@ -39,7 +39,6 @@ class Keyboards:
         buttons = []
 
         for p in portfolios:
-            # Форматируем стоимость
             value_str = f"{float(p['total_value']):,.2f} {p['currency']}" if p['total_value'] else "0 RUB"
 
             buttons.append([
@@ -104,9 +103,9 @@ class Keyboards:
         """Список активов портфеля"""
         buttons = []
 
-        for asset in assets[:10]:  # Показываем первые 10
+        for asset in assets[:10]:
             profit_icon = "🟢" if asset.get('profit', 0) >= 0 else "🔴"
-            profit_str = f"{profit_icon} {float(asset.get('profit_percent', 0)):+.1f}%"
+            profit_str = f"{profit_icon} {float(asset.get('profit_percent', 0)):+.2f}%"
 
             buttons.append([
                 InlineKeyboardButton(

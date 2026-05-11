@@ -125,7 +125,6 @@ async def create_portfolio_alert(callback: CallbackQuery, state: FSMContext):
             reply_markup=keyboard
         )
     else:
-        # Если активов нет, только портфель
         await show_alert_type_selection(callback, state, 'portfolio', portfolio_id)
 
 
@@ -253,7 +252,7 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
             current_value = Decimal('0')
 
         if condition_type == 'percent':
-            hint = "Введите желаемый процент изменения (например, +10 или -5):"
+            hint = "Введите желаемый процент изменения:"
         else:
             hint = f"Введите желаемую стоимость портфеля (текущая: {format_money(current_value)}):"
     else:
@@ -268,7 +267,7 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
             current_value = asset['current_price'] or asset['purchase_price']
 
             if condition_type == 'percent':
-                hint = "Введите желаемый процент изменения (например, +10 или -5):"
+                hint = "Введите желаемый процент изменения:"
             else:
                 hint = f"Введите желаемую цену (текущая: {format_money(current_value, asset['currency'])}):"
 
@@ -285,29 +284,50 @@ async def process_alert_target(message: Message, state: FSMContext):
     """Обработка целевого значения"""
     target_text = message.text.strip().replace(',', '.')
 
+    target_text = target_text.replace('%', '').strip()
+
     data = await state.get_data()
     condition_type = data['condition_type']
+    direction = data['direction']
     user_id = message.from_user.id
 
     if condition_type == 'percent':
         try:
-            target_value = Decimal(target_text.replace('+', ''))
+            target_value = Decimal(target_text)
 
-            if data['direction'] == 'down' and target_value > 0:
-                target_value = -target_value
-            elif data['direction'] == 'up' and target_value < 0:
+            if target_value < 0:
                 target_value = abs(target_value)
+                await message.answer(
+                    f"⚠️ Процент преобразован в положительное значение: {target_value}%\n"
+                    f"Направление '{direction}' определяет логику срабатывания."
+                )
 
-            if abs(target_value) > 1000:
-                await message.answer("❌ Слишком большой процент (макс. 1000%)")
+            if target_value == 0:
+                await message.answer(
+                    "❌ Процент не может быть равен 0.\n"
+                    "Установите ненулевое значение."
+                )
                 return
-        except:
-            await message.answer("❌ Введите число (например, 10 или 5.5):")
+
+            if target_value > 1000:
+                await message.answer(
+                    f"❌ Слишком большой процент (макс. 1000%).\n"
+                    f"Вы ввели: {target_value}%"
+                )
+                return
+
+        except (ValueError, ArithmeticError):
+            await message.answer(
+                "❌ Неверный формат процента.\n\n"
+                "Введите число (например, 10 или 5.5):"
+            )
             return
     else:
         target_value = parse_decimal(target_text)
         if not validate_positive_decimal(target_value):
-            await message.answer("❌ Введите положительное число:")
+            await message.answer(
+                "❌ Введите положительное число (например, 100 или 1500.50):"
+            )
             return
 
     alert_id = None
@@ -317,7 +337,7 @@ async def process_alert_target(message: Message, state: FSMContext):
             user_id=user_id,
             portfolio_id=data['portfolio_id'],
             condition_type=condition_type,
-            direction=data['direction'],
+            direction=direction,
             target_value=target_value
         )
     else:
@@ -325,23 +345,26 @@ async def process_alert_target(message: Message, state: FSMContext):
             user_id=user_id,
             asset_id=data['asset_id'],
             condition_type=condition_type,
-            direction=data['direction'],
+            direction=direction,
             target_value=target_value
         )
 
     await state.clear()
 
     if alert_id:
-        direction_text = "выше" if data['direction'] == 'up' else "ниже"
+        direction_text = "выше" if direction == 'up' else "ниже"
 
         if condition_type == 'percent':
-            target_display = f"{target_value:+.1f}%"
+            if direction == 'up':
+                target_display = f"+{target_value:.1f}%"
+            else:
+                target_display = f"-{target_value:.1f}%"
         else:
             target_display = format_money(target_value)
 
         await message.answer(
             f"✅ <b>Уведомление #{alert_id} создано!</b>\n\n"
-            f"Цель: {direction_text} {target_display}\n\n"
+            f"🎯 Цель: {direction_text} {target_display}\n\n"
             f"Я уведомлю вас при достижении цели!",
             reply_markup=Keyboards.get_main_menu()
         )
@@ -365,7 +388,6 @@ async def view_alert(callback: CallbackQuery):
         await callback.message.edit_text("❌ Уведомление не найдено")
         return
 
-    # Формируем детальную информацию
     direction_icon = "📈" if alert['direction'] == 'up' else "📉"
     direction_text = "выше" if alert['direction'] == 'up' else "ниже"
 
@@ -466,5 +488,4 @@ async def back_to_alerts(callback: CallbackQuery):
     )
 
 
-# Импортируем InlineKeyboardMarkup для использования в этом файле
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton

@@ -119,7 +119,8 @@ class AlertService:
                 current_value = price
             else:
                 if asset['purchase_price'] > 0:
-                    current_value = ((price - asset['purchase_price']) / asset['purchase_price']) * 100
+                    current_percent = ((price - asset['purchase_price']) / asset['purchase_price']) * 100
+                    current_value = current_percent
                 else:
                     current_value = Decimal('0')
 
@@ -130,10 +131,18 @@ class AlertService:
 
         triggered = False
 
-        if direction == 'up' and current_value >= target_value:
-            triggered = True
-        elif direction == 'down' and current_value <= target_value:
-            triggered = True
+        if condition_type == 'percent':
+            if direction == 'up':
+                if current_value >= target_value:
+                    triggered = True
+            elif direction == 'down':
+                if current_value <= -target_value:
+                    triggered = True
+        else:
+            if direction == 'up' and current_value >= target_value:
+                triggered = True
+            elif direction == 'down' and current_value <= target_value:
+                triggered = True
 
         if triggered:
             await self.trigger_alert(alert, current_value, current_price)
@@ -199,26 +208,38 @@ class AlertService:
             current_text = format_money(current_value)
             details = f"💰 Текущая цена: <b>{current_text}</b>"
         else:
-            target_text = f"{float(alert['target_value']):+.1f}%"
-            current_text = f"{float(current_value):+.1f}%"
+            target_value = alert['target_value']
+            if alert['direction'] == 'up':
+                target_display = f"+{float(target_value):+.1f}%"
+            else:
+                target_display = f"-{float(target_value):+.1f}%"
+
+            target_text = target_display
+
+            if current_value >= 0:
+                current_display = f"+{float(current_value):.1f}%"
+            else:
+                current_display = f"{float(current_value):.1f}%"
+
+            current_text = current_display
 
             if current_price:
                 price_text = format_money(current_price)
-                details = f"💰 Текущая цена: {price_text}\n📊 Изменение: <b>{current_text}</b>"
+                details = f"💰 Текущая цена: {price_text}\n📊 Изменение: <b>{current_display}</b>"
             else:
-                details = f"📊 Изменение: <b>{current_text}</b>"
+                details = f"📊 Изменение: <b>{current_display}</b>"
 
         return f"""
-🚨 <b>УВЕДОМЛЕНИЕ ПО АКТИВУ</b>
+    🚨 <b>УВЕДОМЛЕНИЕ ПО АКТИВУ</b>
 
-💎 Актив: <b>{asset_name}</b> ({asset_symbol})
+    💎 Актив: <b>{asset_name}</b> ({asset_symbol})
 
-{direction_icon} Цель: {direction_text} {target_text}
-{details}
+    {direction_icon} Цель: {direction_text} {target_text}
+    {details}
 
-📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}
+    📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}
 
-<i>Уведомление выполнено ✅</i>
+    <i>Уведомление выполнено ✅</i>
         """
 
     async def create_test_notification(self, user_id: int, message: str):

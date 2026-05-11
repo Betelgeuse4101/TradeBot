@@ -30,7 +30,6 @@ class Database:
             )
             logger.info("✅ Подключение к БД установлено")
 
-            # Создаем таблицы при первом запуске
             await self.create_tables()
 
         except Exception as e:
@@ -144,6 +143,14 @@ class Database:
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS fsm_states (
+                key TEXT PRIMARY KEY,
+                state TEXT,
+                data JSONB,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
             CREATE INDEX IF NOT EXISTS idx_assets_portfolio ON assets(portfolio_id);
             CREATE INDEX IF NOT EXISTS idx_assets_symbol ON assets(symbol);
             CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(asset_type);
@@ -151,6 +158,8 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(is_active) WHERE is_active = true;
             CREATE INDEX IF NOT EXISTS idx_alerts_triggered ON alerts(is_triggered) WHERE is_triggered = false;
             CREATE INDEX IF NOT EXISTS idx_price_history_symbol ON price_history(symbol);
+            CREATE INDEX IF NOT EXISTS idx_fsm_updated_at ON fsm_states(updated_at);
+            CREATE INDEX IF NOT EXISTS idx_fsm_state ON fsm_states(state) WHERE state IS NOT NULL;
             """
         ]
 

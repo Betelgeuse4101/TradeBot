@@ -13,7 +13,7 @@ logger = get_logger('moex_client')
 
 
 class MOEXClient:
-    """Клиент для работы с API Московской биржи (RESTful архитектура)"""
+    """Клиент для работы с API Московской биржи"""
 
     ENGINE_MARKET_MAP = {
         'stock': ('stock', 'shares'),

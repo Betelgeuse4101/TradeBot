@@ -131,7 +131,7 @@ async def process_asset_quantity(message: Message, state: FSMContext):
     quantity = parse_decimal(message.text)
 
     if not validate_positive_decimal(quantity):
-        await message.answer("❌ Введите положительное число (например, 10 или 0.5):")
+        await message.answer("❌ Введите положительное число / число слишком большое (более 12 цифр):")
         return
 
     await state.update_data(quantity=quantity)

@@ -1,6 +1,7 @@
 from typing import Dict, List, Optional, Tuple
 from decimal import Decimal
 import asyncio
+from collections import defaultdict
 from datetime import datetime
 
 from moex_client import moex_client
@@ -59,25 +60,60 @@ class PriceService:
 
         logger.info("🔄 Начало планового обновления цен с MOEX...")
 
-        assets = await AssetRepository.get_all_assets()
-        if not assets:
+        # 1. Получаем уникальные символы, а не все активы
+        all_assets = await AssetRepository.get_all_assets()
+        if not all_assets:
             logger.info("📭 В базе нет активов для обновления.")
             return
 
-        symbols_map = {a['symbol']: a['asset_type'] for a in assets}
-        symbols = list(symbols_map.keys())
+        # Группируем по символу для массового обновления БД позже
+        symbols_to_assets = defaultdict(list)
+        for asset in all_assets:
+            symbols_to_assets[asset['symbol']].append(asset)
 
-        prices = await moex_client.get_prices(symbols, symbols_map)
+        unique_symbols = list(symbols_to_assets.keys())
+        logger.info(f"📊 Найдено {len(unique_symbols)} уникальных символов для обновления.")
 
+        # 2. Используем семафор для ограничения количества одновременных запросов к MOEX
+        semaphore = asyncio.Semaphore(5)  # Максимум 5 одновременных запросов
+
+        async def update_single_symbol(symbol: str):
+            async with semaphore:
+                try:
+                    # Принудительно обновляем, минуя кэш, чтобы получить свежие данные
+                    price = await self.get_price(symbol, use_cache=False)
+                    if price and price > 0:
+                        # Сохраняем цену в кэш
+                        await PriceHistoryRepository.update_price(symbol, price)
+                        logger.info(f"💾 Цена обновлена в кэше: {symbol} = {price}")
+                        return symbol, price
+                    else:
+                        logger.warning(f"⚠️ Не удалось получить цену для {symbol}")
+                        return symbol, None
+                except Exception as e:
+                    logger.error(f"❌ Ошибка получения цены для {symbol}: {e}")
+                    return symbol, None
+
+        # 3. Запускаем задачи на обновление конкурентно
+        tasks = [update_single_symbol(s) for s in unique_symbols]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 4. Пакетно обновляем цены в таблице `assets`
         updated_count = 0
-        for symbol, price in prices.items():
-            if price and price > 0:
-                await PriceHistoryRepository.update_price(symbol, price)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"❌ Ошибка в фоновой задаче: {result}")
+                continue
 
-                for a in assets:
-                    if a['symbol'] == symbol:
-                        await AssetRepository.update_price(a['id'], price)
+            symbol, price = result
+            if price:
+                # Обновляем все активы с этим символом во всех портфелях
+                for asset in symbols_to_assets[symbol]:
+                    try:
+                        await AssetRepository.update_price(asset['id'], price)
                         updated_count += 1
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка обновления цены для актива {asset['id']}: {e}")
 
         logger.info(f"✅ Плановое обновление завершено. Обновлено {updated_count} записей в портфелях.")
 

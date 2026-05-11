@@ -7,11 +7,12 @@ from handlers import common, portfolio, assets, alerts
 from logger import get_logger, setup_module_loggers
 from services.alert_service import AlertService
 from services.price_service import price_service
+from database.fsm_storage import AsyncpgStorage
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.base import DefaultKeyBuilder
 from aiohttp import ClientError
 import aiohttp
 from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
@@ -24,7 +25,12 @@ class CryptoBot:
     """Главный класс бота"""
 
     def __init__(self):
-        self.storage = MemoryStorage()
+        # Используем PostgreSQL хранилище вместо MemoryStorage
+        self.storage = AsyncpgStorage()
+
+        # Настройка ключей для правильной изоляции состояний
+        self.storage.key_builder = DefaultKeyBuilder(with_bot_id=True, with_destiny=True)
+
         session = AiohttpSession()
 
         self.bot = Bot(
@@ -37,6 +43,7 @@ class CryptoBot:
         self._polling_task = None
         self._alert_task = None
         self._price_updater_task = None
+        self._cleanup_task = None
         self._retry_count = 0
         self._max_retries = 10
         self._polling_timeout = Config.TELEGRAM_POLLING_TIMEOUT
@@ -54,6 +61,10 @@ class CryptoBot:
         logger.info("=" * 60)
 
         await db.connect()
+
+        # Запуск периодической очистки старых FSM состояний
+        self._cleanup_task = asyncio.create_task(self._cleanup_old_fsm_states_periodically())
+
         await self._safe_delete_webhook()
 
         # Запуск сервиса уведомлений
@@ -75,6 +86,19 @@ class CryptoBot:
             logger.error(f"💥 Критическая ошибка в поллинге: {e}", exc_info=True)
         finally:
             await self.stop()
+
+    async def _cleanup_old_fsm_states_periodically(self):
+        """Периодическая очистка старых FSM состояний"""
+        while not self._is_shutting_down:
+            try:
+                # Очищаем состояния старше 24 часов раз в 6 часов
+                await self.storage.cleanup_old_states(max_age_hours=24)
+                await asyncio.sleep(6 * 3600)  # 6 часов
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Ошибка при очистке FSM состояний: {e}")
+                await asyncio.sleep(3600)  # При ошибке ждем час
 
     async def _safe_delete_webhook(self):
         """Безопасное удаление вебхука с повторными попытками"""
@@ -137,7 +161,8 @@ class CryptoBot:
                 await asyncio.sleep(wait_time)
 
                 if consecutive_errors >= max_consecutive_errors:
-                    logger.error(f"❌ Слишком много последовательных ошибок ({consecutive_errors}), перезапускаем сессию...")
+                    logger.error(
+                        f"❌ Слишком много последовательных ошибок ({consecutive_errors}), перезапускаем сессию...")
                     await self._recreate_session()
                     consecutive_errors = 0
 
@@ -191,6 +216,8 @@ class CryptoBot:
             tasks_to_cancel.append(self._alert_task)
         if self._price_updater_task and not self._price_updater_task.done():
             tasks_to_cancel.append(self._price_updater_task)
+        if self._cleanup_task and not self._cleanup_task.done():
+            tasks_to_cancel.append(self._cleanup_task)
 
         for task in tasks_to_cancel:
             task.cancel()
@@ -202,10 +229,12 @@ class CryptoBot:
         await self.alert_service.stop()
         await db.disconnect()
         await price_service.close()
+        await self.storage.close()
 
         try:
-            if self.bot.session and not self.bot.session.closed:
+            if self.bot.session:
                 await asyncio.wait_for(self.bot.session.close(), timeout=10)
+                logger.info("✅ Сессия бота закрыта")
         except asyncio.TimeoutError:
             logger.warning("⚠️ Таймаут при закрытии сессии бота")
         except Exception as e:

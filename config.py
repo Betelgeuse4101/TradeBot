@@ -39,15 +39,16 @@ class Config:
     PORTFOLIO_CACHE_TTL = int(os.getenv("PORTFOLIO_CACHE_TTL", "60"))
     PRICE_UPDATE_INTERVAL = int(os.getenv("PRICE_UPDATE_INTERVAL", "14400"))
 
-    # Уведомления (Alerts)
+    # Уведомления
     ALERT_CHECK_INTERVAL = int(os.getenv("ALERT_CHECK_INTERVAL", "60"))
     ALERT_COOLDOWN_MINUTES = int(os.getenv("ALERT_COOLDOWN_MINUTES", "5"))
     ALERT_ERROR_DELAY = int(os.getenv("ALERT_ERROR_DELAY", "60"))
 
-    # Торговые часы MOEX (МСК)
+    # Торговые часы MOEX
     MOEX_TRADING_START_HOUR = int(os.getenv("MOEX_TRADING_START_HOUR", "10"))
     MOEX_TRADING_END_HOUR = int(os.getenv("MOEX_TRADING_END_HOUR", "18"))
     MOEX_TRADING_END_MINUTE = int(os.getenv("MOEX_TRADING_END_MINUTE", "45"))
+
 
     # Paths
     LOG_DIR = Path("logs")
