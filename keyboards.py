@@ -175,7 +175,14 @@ class Keyboards:
                     target_display = f"{float(alert['target_value']):+.1f}%"
 
                 direction = "↑" if alert['direction'] == 'up' else "↓"
-                status = "✅" if alert['is_triggered'] else "⏳"
+
+                if alert['is_triggered']:
+                    status = "✅"
+                elif alert['is_active']:
+                    status = "⏳"
+                else:
+                    status = "⏸️"
+
                 text = f"{status} {direction} {name}: {target_display}"
             else:
                 asset_name = alert.get('asset_symbol', 'Актив')
@@ -185,7 +192,14 @@ class Keyboards:
                     target_display = f"{float(alert['target_value']):+.1f}%"
 
                 direction = "↑" if alert['direction'] == 'up' else "↓"
-                status = "✅" if alert['is_triggered'] else "⏳"
+
+                if alert['is_triggered']:
+                    status = "✅"
+                elif alert['is_active']:
+                    status = "⏳"
+                else:
+                    status = "⏸️"
+
                 text = f"{status} {direction} {asset_name}: {target_display}"
 
             buttons.append([
@@ -211,15 +225,24 @@ class Keyboards:
         ])
 
     @staticmethod
-    def get_alert_actions(alert_id: int):
+    def get_alert_actions(alert_id: int, is_active: bool = True, is_triggered: bool = False):
         """Действия с уведомлением"""
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"delete_alert_{alert_id}"),
-                InlineKeyboardButton(text="🔄 Активировать", callback_data=f"reactivate_alert_{alert_id}")
-            ],
-            [InlineKeyboardButton(text="↩️ К списку", callback_data="back_to_alerts")]
+        buttons = []
+
+        buttons.append([
+            InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"delete_alert_{alert_id}"),
         ])
+
+        if not is_active or is_triggered:
+            buttons.append([
+                InlineKeyboardButton(text="🔄 Активировать", callback_data=f"reactivate_alert_{alert_id}")
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(text="↩️ К списку", callback_data="back_to_alerts")
+        ])
+
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
 
     @staticmethod
     def get_skip_keyboard():

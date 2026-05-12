@@ -11,6 +11,7 @@ from services.price_service import price_service
 from services.portfolio_service import portfolio_service
 from utils import format_money, format_percent
 from callback_utils import safe_callback_answer, safe_edit_message  # Добавили импорт безопасных функций
+from constants import SYSTEM_COMMANDS
 
 router = Router()
 logger = get_logger('portfolio')
@@ -81,6 +82,38 @@ async def create_portfolio_callback(callback: CallbackQuery, state: FSMContext):
 @log_function_call()
 async def process_portfolio_name(message: Message, state: FSMContext):
     """Обработка названия портфеля"""
+    # Проверка на системные команды
+    if message.text in SYSTEM_COMMANDS:
+        await state.clear()
+        # Удаляем сообщение пользователя
+        try:
+            await message.delete()
+        except:
+            pass
+        # Перенаправляем на нужный обработчик
+        if message.text == "📊 Мои портфели":
+            await show_portfolios(message)
+        elif message.text == "➕ Создать портфель":
+            await create_portfolio_start(message, state)
+        elif message.text == "🔔 Мои уведомления":
+            from handlers.alerts import show_alerts
+            await show_alerts(message)
+        elif message.text == "📈 Популярные тикеры":
+            from handlers.common import show_popular_tickers
+            await show_popular_tickers(message)
+        elif message.text == "📋 Помощь":
+            from handlers.common import cmd_help
+            await cmd_help(message)
+        elif message.text == "/start":
+            from handlers.common import cmd_start
+            await cmd_start(message)
+        elif message.text == "/cancel":
+            await message.answer(
+                "❌ Действие отменено",
+                reply_markup=Keyboards.get_main_menu()
+            )
+        return
+
     name = message.text.strip()
 
     if len(name) < 3 or len(name) > 50:
@@ -105,6 +138,34 @@ async def process_portfolio_name(message: Message, state: FSMContext):
 @log_function_call()
 async def process_portfolio_description(message: Message, state: FSMContext):
     """Обработка описания портфеля"""
+    # Проверка на системные команды
+    if message.text in SYSTEM_COMMANDS:
+        await state.clear()
+        try:
+            await message.delete()
+        except:
+            pass
+
+        if message.text == "📊 Мои портфели":
+            await show_portfolios(message)
+        elif message.text == "➕ Создать портфель":
+            await create_portfolio_start(message, state)
+        elif message.text == "🔔 Мои уведомления":
+            from handlers.alerts import show_alerts
+            await show_alerts(message)
+        elif message.text == "📈 Популярные тикеры":
+            from handlers.common import show_popular_tickers
+            await show_popular_tickers(message)
+        elif message.text == "📋 Помощь":
+            from handlers.common import cmd_help
+            await cmd_help(message)
+        elif message.text == "/cancel":
+            await message.answer(
+                "❌ Действие отменено",
+                reply_markup=Keyboards.get_main_menu()
+            )
+        return
+
     if message.text == "/skip":
         description = None
     else:
@@ -391,6 +452,26 @@ async def edit_portfolio_name(callback: CallbackQuery, state: FSMContext):
 @log_function_call()
 async def process_edit_portfolio_name(message: Message, state: FSMContext):
     """Обработка нового названия портфеля"""
+    # Проверка на системные команды
+    if message.text in SYSTEM_COMMANDS:
+        await state.clear()
+        try:
+            await message.delete()
+        except:
+            pass
+        # Перенаправляем
+        if message.text == "📊 Мои портфели":
+            await show_portfolios(message)
+        elif message.text == "🔔 Мои уведомления":
+            from handlers.alerts import show_alerts
+            await show_alerts(message)
+        elif message.text == "/cancel":
+            await message.answer(
+                "❌ Действие отменено",
+                reply_markup=Keyboards.get_main_menu()
+            )
+        return
+
     new_name = message.text.strip()
 
     if len(new_name) < 3 or len(new_name) > 50:
@@ -450,7 +531,25 @@ async def edit_portfolio_description(callback: CallbackQuery, state: FSMContext)
 @log_function_call()
 async def process_edit_portfolio_description(message: Message, state: FSMContext):
     """Обработка нового описания портфеля"""
-    if message.text == "/skip":
+    if message.text in SYSTEM_COMMANDS:
+        await state.clear()
+        try:
+            await message.delete()
+        except:
+            pass
+        if message.text == "📊 Мои портфели":
+            await show_portfolios(message)
+        elif message.text == "🔔 Мои уведомления":
+            from handlers.alerts import show_alerts
+            await show_alerts(message)
+        elif message.text == "/cancel":
+            await message.answer(
+                "❌ Действие отменено",
+                reply_markup=Keyboards.get_main_menu()
+            )
+        return
+
+    if message.text == "/skip" or message.text == "⏭️ Пропустить":
         new_description = None
     else:
         new_description = message.text.strip()

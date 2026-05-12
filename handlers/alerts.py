@@ -341,7 +341,12 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
         if condition_type == 'percent':
             hint = f"Введите желаемый процент изменения портфеля\n(текущая стоимость: {format_money(current_value)}):"
         else:
-            hint = f"Введите желаемую стоимость портфеля\n(текущая: {format_money(current_value)}):"
+            hint = (
+                f"💰 <b>Введите желаемую стоимость портфеля</b>\n\n"
+                f"Текущая стоимость: <b>{format_money(current_value)}</b>\n\n"
+                f"❗ Вводите ТОЛЬКО число, без букв и пробелов\n"
+                f"<i>Например: 1000000 (а не 1 млн)</i>"
+            )
     else:
         asset_id = target_id
         asset = await AssetRepository.get(asset_id)
@@ -421,6 +426,95 @@ async def process_alert_target(message: Message, state: FSMContext):
                 "❌ Введите положительное число (например, 100 или 1500.50):"
             )
             return
+
+    current_value = None
+    currency = 'RUB'
+
+    if data['alert_type'] == 'portfolio':
+        portfolio_id = data['portfolio_id']
+        assets = await AssetRepository.get_portfolio_assets(portfolio_id)
+
+        if assets:
+            total_value = Decimal('0')
+            total_cost = Decimal('0')
+            for asset in assets:
+                quantity = asset['quantity']
+                purchase_price = asset['purchase_price']
+                current_price = asset['current_price'] or purchase_price
+                total_value += quantity * current_price
+                total_cost += quantity * purchase_price
+
+            if condition_type == 'price':
+                current_value = total_value
+            else:  # percent
+                if total_cost > 0:
+                    current_value = ((total_value - total_cost) / total_cost) * 100
+                else:
+                    current_value = Decimal('0')
+    else:
+        asset_id = data['asset_id']
+        asset = await AssetRepository.get(asset_id)
+
+        if asset:
+            currency = asset.get('currency', 'RUB')
+            current_price = asset['current_price'] or asset['purchase_price']
+
+            if condition_type == 'price':
+                current_value = current_price
+            else:  # percent
+                if asset['purchase_price'] > 0:
+                    current_value = ((current_price - asset['purchase_price']) / asset['purchase_price']) * 100
+                else:
+                    current_value = Decimal('0')
+
+    # Проверяем логику
+    if current_value is not None:
+        if condition_type == 'price':
+            if direction == 'up' and target_value <= current_value:
+                await message.answer(
+                    f"⚠️ <b>Ошибка в уведомлении!</b>\n\n"
+                    f"📈 Направление: <b>ВЫШЕ</b>\n"
+                    f"💰 Текущая цена: <b>{format_money(current_value, currency)}</b>\n"
+                    f"🎯 Ваша цель: <b>{format_money(target_value, currency)}</b>\n\n"
+                    f"❌ Цель должна быть <b>ВЫШЕ</b> текущей цены!\n"
+                    f"<i>Укажите цену больше {format_money(current_value, currency)}</i>"
+                )
+                return
+
+            if direction == 'down' and target_value >= current_value:
+                await message.answer(
+                    f"⚠️ <b>Ошибка в уведомлении!</b>\n\n"
+                    f"📉 Направление: <b>НИЖЕ</b>\n"
+                    f"💰 Текущая цена: <b>{format_money(current_value, currency)}</b>\n"
+                    f"🎯 Ваша цель: <b>{format_money(target_value, currency)}</b>\n\n"
+                    f"❌ Цель должна быть <b>НИЖЕ</b> текущей цены!\n"
+                    f"<i>Укажите цену меньше {format_money(current_value, currency)}</i>"
+                )
+                return
+
+        else:  # percent
+            if direction == 'up' and current_value >= target_value:
+                await message.answer(
+                    f"⚠️ <b>Ошибка в уведомлении!</b>\n\n"
+                    f"📈 Направление: <b>ВЫШЕ</b>\n"
+                    f"📊 Текущее изменение: <b>{float(current_value):+.2f}%</b>\n"
+                    f"🎯 Ваша цель: <b>+{float(target_value):.1f}%</b>\n\n"
+                    f"❌ Цель должна быть <b>ВЫШЕ</b> текущего изменения!\n"
+                    f"<i>Укажите процент больше {float(current_value):+.2f}%</i>"
+                )
+                return
+
+            if direction == 'down' and current_value <= -target_value:
+                await message.answer(
+                    f"⚠️ <b>Ошибка в уведомлении!</b>\n\n"
+                    f"📉 Направление: <b>НИЖЕ</b>\n"
+                    f"📊 Текущее изменение: <b>{float(current_value):+.2f}%</b>\n"
+                    f"🎯 Ваша цель: <b>-{float(target_value):.1f}%</b>\n\n"
+                    f"❌ Цель должна быть <b>НИЖЕ</b> текущего изменения!\n"
+                    f"<i>Укажите процент больше по модулю</i>"
+                )
+                return
+
 
     alert_id = None
 
@@ -528,9 +622,12 @@ async def view_alert(callback: CallbackQuery):
 📅 Создано: {created}
         """
 
+    is_active = alert['is_active'] and not alert['is_triggered']
+    is_triggered = alert['is_triggered']
+
     await callback.message.edit_text(
         text,
-        reply_markup=Keyboards.get_alert_actions(alert_id)
+        reply_markup=Keyboards.get_alert_actions(alert_id, is_active=is_active, is_triggered=is_triggered)
     )
 
 

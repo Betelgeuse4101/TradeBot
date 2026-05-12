@@ -12,6 +12,7 @@ from services.price_service import price_service
 from services.portfolio_service import portfolio_service
 from utils import parse_decimal, format_money, validate_positive_decimal, format_percent
 from callback_utils import safe_callback_answer, safe_edit_message
+from constants import SYSTEM_COMMANDS
 
 router = Router()
 logger = get_logger('assets')
