@@ -3,7 +3,7 @@ from decimal import Decimal
 import asyncio
 from config import Config
 from datetime import datetime, timedelta
-
+from database.db import db
 from database.repositories import AlertRepository, PortfolioRepository, AssetRepository
 from services.price_service import price_service
 from services.portfolio_service import portfolio_service
@@ -90,16 +90,23 @@ class AlertService:
         if alert['alert_type'] == 'portfolio':
             portfolio_id = alert['portfolio_id']
 
-            summary = await portfolio_service.calculate_portfolio_summary(portfolio_id)
 
-            if not summary or summary.get('assets_count', 0) == 0:
+            row = await db.fetchrow("""
+                SELECT 
+                    COALESCE(SUM(quantity * COALESCE(current_price, purchase_price)), 0) as total_value,
+                    COALESCE(SUM(quantity * purchase_price), 0) as total_cost
+                FROM assets WHERE portfolio_id = $1
+            """, portfolio_id)
+
+            if not row or row['total_value'] == 0:
                 logger.debug(f"Портфель {portfolio_id} пуст, пропускаем уведомление {alert_id}")
                 return
 
             if condition_type == 'price':
-                current_value = summary['total_value']
+                current_value = row['total_value']
             else:
-                current_value = summary['total_profit_percent']
+                total_profit = row['total_value'] - row['total_cost']
+                current_value = (total_profit / row['total_cost'] * 100) if row['total_cost'] > 0 else Decimal('0')
 
         else:
             asset_id = alert['asset_id']

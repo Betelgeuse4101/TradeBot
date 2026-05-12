@@ -7,7 +7,7 @@ from aiogram.exceptions import TelegramBadRequest
 from database.repositories import UserRepository
 from keyboards import Keyboards
 from logger import get_logger, log_function_call
-from constants import WELCOME_MESSAGE, HELP_MESSAGE
+from constants import WELCOME_MESSAGE, HELP_MESSAGE, POPULAR_TICKERS
 from callback_utils import safe_callback_answer, safe_edit_message, safe_delete_message
 
 router = Router()
@@ -91,3 +91,57 @@ async def cancel_action(callback: CallbackQuery, state: FSMContext):
         "❌ Действие отменено",
         reply_markup=Keyboards.get_main_menu()
     )
+
+
+@router.message(F.text == "📈 Популярные тикеры")
+@log_function_call()
+async def show_popular_tickers(message: Message):
+    """Показывает список популярных тикеров"""
+
+    items_per_page = 10
+    total_pages = (len(POPULAR_TICKERS) + items_per_page - 1) // items_per_page
+
+    # Формируем текст первой страницы
+    text = "📈 <b>Популярные тикеры MOEX</b>\n\n"
+
+    for i, ticker in enumerate(POPULAR_TICKERS[:items_per_page]):
+        text += f"{i + 1}. <b>{ticker['symbol']}</b> - {ticker['name']} ({ticker['type']})\n"
+
+    text += f"\n📄 Страница 1 из {total_pages}"
+
+    await message.answer(
+        text,
+        reply_markup=Keyboards.get_popular_tickers_page(page=0, total_pages=total_pages)
+    )
+
+
+@router.callback_query(F.data.startswith("pop_page_"))
+@log_function_call()
+async def change_popular_page(callback: CallbackQuery):
+    """Смена страницы популярных тикеров"""
+    await callback.answer()
+
+    page = int(callback.data.replace("pop_page_", ""))
+    items_per_page = 10
+    total_pages = (len(POPULAR_TICKERS) + items_per_page - 1) // items_per_page
+
+    start_idx = page * items_per_page
+    end_idx = min(start_idx + items_per_page, len(POPULAR_TICKERS))
+
+    text = "📈 <b>Популярные тикеры MOEX</b>\n\n"
+
+    for i, ticker in enumerate(POPULAR_TICKERS[start_idx:end_idx], start=start_idx + 1):
+        text += f"{i}. <b>{ticker['symbol']}</b> - {ticker['name']} ({ticker['type']})\n"
+
+    text += f"\n📄 Страница {page + 1} из {total_pages}"
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=Keyboards.get_popular_tickers_page(page=page, total_pages=total_pages)
+    )
+
+
+@router.callback_query(F.data == "ignore")
+async def ignore_callback(callback: CallbackQuery):
+    """Игнорирует нажатие на информационную кнопку"""
+    await callback.answer()

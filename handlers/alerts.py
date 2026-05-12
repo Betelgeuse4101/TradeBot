@@ -3,13 +3,12 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from decimal import Decimal
-
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database.repositories import AlertRepository, PortfolioRepository, AssetRepository
 from keyboards import Keyboards
 from logger import get_logger, log_function_call
 from services.price_service import price_service
-from services.portfolio_service import portfolio_service
-from utils import parse_decimal, validate_positive_decimal, format_money, format_percent
+from utils import parse_decimal, validate_positive_decimal, format_money
 
 router = Router()
 logger = get_logger('alerts')
@@ -104,17 +103,32 @@ async def create_portfolio_alert(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("❌ Портфель не найден")
         return
 
+    # Обновляем цены портфеля перед созданием уведомления
+    try:
+        await price_service.update_portfolio_prices(portfolio_id)
+    except Exception as e:
+        logger.error(f"Ошибка обновления цен портфеля: {e}")
+
     await state.update_data(
         alert_type='portfolio',
         portfolio_id=portfolio_id
     )
 
+    # Проверяем, есть ли активы в портфеле
     assets = await AssetRepository.get_portfolio_assets(portfolio_id)
+
     if assets:
+        # Показываем выбор: весь портфель или конкретный актив
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="📊 Весь портфель", callback_data=f"alert_target_portfolio_{portfolio_id}"),
-                InlineKeyboardButton(text="💎 Конкретный актив", callback_data=f"alert_choose_asset_{portfolio_id}")
+                InlineKeyboardButton(
+                    text="📊 Весь портфель",
+                    callback_data=f"alert_target_portfolio_{portfolio_id}"
+                ),
+                InlineKeyboardButton(
+                    text="💎 Конкретный актив",
+                    callback_data=f"alert_choose_asset_{portfolio_id}"
+                )
             ],
             [InlineKeyboardButton(text="↩️ Назад", callback_data="new_alert")]
         ])
@@ -125,6 +139,7 @@ async def create_portfolio_alert(callback: CallbackQuery, state: FSMContext):
             reply_markup=keyboard
         )
     else:
+        # Если нет активов, сразу показываем типы уведомлений для портфеля
         await show_alert_type_selection(callback, state, 'portfolio', portfolio_id)
 
 
@@ -135,6 +150,10 @@ async def alert_target_portfolio(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
     portfolio_id = int(callback.data.replace("alert_target_portfolio_", ""))
+    await state.update_data(
+        alert_type='portfolio',
+        portfolio_id=portfolio_id
+    )
     await show_alert_type_selection(callback, state, 'portfolio', portfolio_id)
 
 
@@ -154,6 +173,7 @@ async def alert_choose_asset(callback: CallbackQuery, state: FSMContext):
         )
         return
 
+    # Показываем первые 10 активов
     buttons = []
     for asset in assets[:10]:
         buttons.append([
@@ -164,9 +184,19 @@ async def alert_choose_asset(callback: CallbackQuery, state: FSMContext):
         ])
 
     if len(assets) > 10:
-        buttons.append([InlineKeyboardButton(text="📄 Показать еще", callback_data=f"more_assets_alert_{portfolio_id}_10")])
+        buttons.append([
+            InlineKeyboardButton(
+                text="📄 Показать еще",
+                callback_data=f"more_assets_alert_{portfolio_id}_10"
+            )
+        ])
 
-    buttons.append([InlineKeyboardButton(text="↩️ Назад", callback_data=f"alert_portfolio_{portfolio_id}")])
+    buttons.append([
+        InlineKeyboardButton(
+            text="↩️ Назад",
+            callback_data=f"alert_portfolio_{portfolio_id}"
+        )
+    ])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -197,6 +227,59 @@ async def create_asset_alert(callback: CallbackQuery, state: FSMContext):
     await show_alert_type_selection(callback, state, 'asset', asset_id)
 
 
+@router.callback_query(F.data.startswith("more_assets_alert_"))
+@log_function_call()
+async def paginate_assets_alert(callback: CallbackQuery):
+    """Пагинация при выборе актива для создания уведомления"""
+    await callback.answer()
+
+    # Разбираем callback_data: more_assets_alert_{portfolio_id}_{offset}
+    parts = callback.data.split("_")
+    if len(parts) < 5:
+        return
+
+    portfolio_id = int(parts[3])
+    offset = int(parts[4])
+
+    assets = await AssetRepository.get_portfolio_assets(portfolio_id)
+    if not assets:
+        return
+
+    next_offset = offset + 10
+    current_page_assets = assets[offset:next_offset]
+
+    buttons = []
+    for asset in current_page_assets:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{asset['symbol']} - {asset['name'][:30]}",
+                callback_data=f"alert_asset_{asset['id']}"
+            )
+        ])
+
+    if len(assets) > next_offset:
+        buttons.append([
+            InlineKeyboardButton(
+                text="📄 Показать еще",
+                callback_data=f"more_assets_alert_{portfolio_id}_{next_offset}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            text="↩️ Назад",
+            callback_data=f"alert_portfolio_{portfolio_id}"
+        )
+    ])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    await callback.message.edit_text(
+        f"🔔 <b>Выберите актив для уведомления (Стр. {offset // 10 + 1}):</b>",
+        reply_markup=keyboard
+    )
+
+
 async def show_alert_type_selection(callback: CallbackQuery, state: FSMContext,
                                     target_type: str, target_id: int):
     """Показывает выбор типа уведомления"""
@@ -224,7 +307,13 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
     """Выбор типа уведомления"""
     await callback.answer()
 
+    # Разбираем callback_data: alert_type_{condition}_{direction}_{target_id}
     parts = callback.data.replace("alert_type_", "").split("_")
+
+    if len(parts) < 3:
+        await callback.message.edit_text("❌ Ошибка формата данных")
+        return
+
     condition_type = parts[0]  # price или percent
     direction = parts[1]  # up или down
     target_id = int(parts[2])
@@ -235,41 +324,45 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(AlertState.waiting_for_target_value)
 
-    user_id = callback.from_user.id
-    current_value = None
-
     data = await state.get_data()
+    hint = ""
 
     if data['alert_type'] == 'portfolio':
         portfolio_id = target_id
-        assets = await AssetRepository.get_portfolio_assets(portfolio_id)
 
-        if assets:
-            await price_service.update_portfolio_prices(portfolio_id)
-            portfolio_value = await price_service.calculate_portfolio_value(portfolio_id, assets)
-            current_value = portfolio_value['total_value']
-        else:
+        # Получаем текущую стоимость портфеля
+        try:
+            summary = await price_service.calculate_portfolio_value(portfolio_id)
+            current_value = summary['total_value']
+        except Exception as e:
+            logger.error(f"Ошибка расчета стоимости портфеля: {e}")
             current_value = Decimal('0')
 
         if condition_type == 'percent':
-            hint = "Введите желаемый процент изменения:"
+            hint = f"Введите желаемый процент изменения портфеля\n(текущая стоимость: {format_money(current_value)}):"
         else:
-            hint = f"Введите желаемую стоимость портфеля (текущая: {format_money(current_value)}):"
+            hint = f"Введите желаемую стоимость портфеля\n(текущая: {format_money(current_value)}):"
     else:
         asset_id = target_id
         asset = await AssetRepository.get(asset_id)
 
         if asset:
+            # Получаем актуальную цену
             if not asset['current_price']:
-                await price_service.get_price(asset['symbol'])
-                asset = await AssetRepository.get(asset_id)
+                try:
+                    price = await price_service.get_price(asset['symbol'])
+                    if price:
+                        await AssetRepository.update_price(asset_id, price)
+                        asset['current_price'] = price
+                except Exception as e:
+                    logger.error(f"Ошибка получения цены: {e}")
 
-            current_value = asset['current_price'] or asset['purchase_price']
+            current_price = asset['current_price'] or asset['purchase_price']
 
             if condition_type == 'percent':
-                hint = "Введите желаемый процент изменения:"
+                hint = f"Введите желаемый процент изменения\n(текущая цена: {format_money(current_price, asset['currency'])}):"
             else:
-                hint = f"Введите желаемую цену (текущая: {format_money(current_value, asset['currency'])}):"
+                hint = f"Введите желаемую цену\n(текущая: {format_money(current_price, asset['currency'])}):"
 
     await callback.message.edit_text(
         f"🎯 <b>Установка цели</b>\n\n"
@@ -283,7 +376,6 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
 async def process_alert_target(message: Message, state: FSMContext):
     """Обработка целевого значения"""
     target_text = message.text.strip().replace(',', '.')
-
     target_text = target_text.replace('%', '').strip()
 
     data = await state.get_data()
@@ -332,22 +424,31 @@ async def process_alert_target(message: Message, state: FSMContext):
 
     alert_id = None
 
-    if data['alert_type'] == 'portfolio':
-        alert_id = await AlertRepository.create_portfolio_alert(
-            user_id=user_id,
-            portfolio_id=data['portfolio_id'],
-            condition_type=condition_type,
-            direction=direction,
-            target_value=target_value
+    try:
+        if data['alert_type'] == 'portfolio':
+            alert_id = await AlertRepository.create_portfolio_alert(
+                user_id=user_id,
+                portfolio_id=data['portfolio_id'],
+                condition_type=condition_type,
+                direction=direction,
+                target_value=target_value
+            )
+        else:
+            alert_id = await AlertRepository.create_asset_alert(
+                user_id=user_id,
+                asset_id=data['asset_id'],
+                condition_type=condition_type,
+                direction=direction,
+                target_value=target_value
+            )
+    except Exception as e:
+        logger.error(f"Ошибка создания уведомления: {e}")
+        await message.answer(
+            "❌ Ошибка создания уведомления. Попробуйте позже.",
+            reply_markup=Keyboards.get_main_menu()
         )
-    else:
-        alert_id = await AlertRepository.create_asset_alert(
-            user_id=user_id,
-            asset_id=data['asset_id'],
-            condition_type=condition_type,
-            direction=direction,
-            target_value=target_value
-        )
+        await state.clear()
+        return
 
     await state.clear()
 
@@ -468,7 +569,7 @@ async def reactivate_alert(callback: CallbackQuery):
         )
     else:
         await callback.message.edit_text(
-            "❌ Ошибка активации уведомления",
+            "❌ Ошибка активации уведомления. Проверьте, возможно, оно уже активно.",
             reply_markup=Keyboards.get_back_button("back_to_alerts")
         )
 
@@ -486,6 +587,3 @@ async def back_to_alerts(callback: CallbackQuery):
         "🔔 <b>Ваши уведомления:</b>",
         reply_markup=Keyboards.get_alerts_list(alerts)
     )
-
-
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton

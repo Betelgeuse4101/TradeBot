@@ -40,11 +40,8 @@ async def show_portfolios(message: Message):
         )
         return
 
-    # Получаем актуальные данные (мгновенно из БД)
     for portfolio in portfolios:
-        if portfolio['assets_count'] > 0:
-            summary = await portfolio_service.calculate_portfolio_summary(portfolio['id'])
-            portfolio['total_value'] = summary.get('total_value', Decimal('0'))
+        portfolio['total_value'] = portfolio.get('current_value', Decimal('0'))
 
     await message.answer(
         "📊 <b>Ваши портфели:</b>",

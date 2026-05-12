@@ -25,10 +25,8 @@ class CryptoBot:
     """Главный класс бота"""
 
     def __init__(self):
-        # Используем PostgreSQL хранилище вместо MemoryStorage
         self.storage = AsyncpgStorage()
 
-        # Настройка ключей для правильной изоляции состояний
         self.storage.key_builder = DefaultKeyBuilder(with_bot_id=True, with_destiny=True)
 
         session = AiohttpSession()

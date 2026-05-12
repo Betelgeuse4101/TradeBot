@@ -331,7 +331,8 @@ async def refresh_asset_price(callback: CallbackQuery):
     else:
         await safe_callback_answer(callback, "❌ Не удалось обновить цену")
 
-    await view_asset(callback)
+    new_callback = callback.model_copy(update={"data": f"view_asset_{asset_id}"})
+    await view_asset(new_callback)
 
 
 @router.callback_query(F.data.startswith("edit_asset_"))
@@ -468,3 +469,59 @@ async def confirm_delete_asset(callback: CallbackQuery):
             "❌ Ошибка удаления актива",
             reply_markup=Keyboards.get_back_button(f"portfolio_{portfolio_id}")
         )
+
+
+@router.callback_query(F.data.startswith("more_assets_"))
+@log_function_call()
+async def paginate_assets(callback: CallbackQuery):
+    """Пагинация списка активов"""
+    await safe_callback_answer(callback)
+
+    parts = callback.data.split("_")
+    # Ожидаемый формат: more_assets_{portfolio_id}_{offset}
+    if len(parts) < 4:
+        return
+
+    portfolio_id = int(parts[2])
+    offset = int(parts[3])
+
+    assets = await AssetRepository.get_portfolio_assets(portfolio_id)
+    if not assets:
+        return
+
+    for asset in assets:
+        quantity = asset['quantity']
+        purchase_price = asset['purchase_price']
+        current_price = asset['current_price'] or purchase_price
+        cost = quantity * purchase_price
+        current_value = quantity * current_price
+        profit = current_value - cost
+        asset['profit'] = profit
+        asset['profit_percent'] = (profit / cost * 100) if cost > 0 else Decimal('0')
+
+    next_offset = offset + 10
+    current_page_assets = assets[offset:next_offset]
+
+    buttons = []
+    for asset in current_page_assets:
+        profit_icon = "🟢" if asset.get('profit', 0) >= 0 else "🔴"
+        profit_str = f"{profit_icon} {float(asset.get('profit_percent', 0)):+.2f}%"
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{asset['symbol']} - {asset['name'][:20]} {profit_str}",
+                callback_data=f"view_asset_{asset['id']}"
+            )
+        ])
+
+    if len(assets) > next_offset:
+        buttons.append(
+            [InlineKeyboardButton(text="📄 Показать еще", callback_data=f"more_assets_{portfolio_id}_{next_offset}")])
+
+    buttons.append([InlineKeyboardButton(text="↩️ Назад к портфелю", callback_data=f"portfolio_{portfolio_id}")])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    await safe_edit_message(
+        callback,
+        f"📋 <b>Активы портфеля (Стр. {offset // 10 + 1}):</b>",
+        reply_markup=keyboard
+    )

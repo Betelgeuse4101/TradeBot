@@ -3,8 +3,6 @@ import asyncio
 from typing import Dict, List, Optional, Any, Tuple
 from decimal import Decimal
 from datetime import datetime, timedelta
-import json
-
 from config import Config
 from logger import get_logger
 from utils import to_decimal

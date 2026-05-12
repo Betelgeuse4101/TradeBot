@@ -12,8 +12,7 @@ class UserRepository:
 
     @staticmethod
     async def create_or_update(user_id: int, username: str = None,
-                               first_name: str = None, last_name: str = None,
-                               broker_type: str = None, broker_token: str = None) -> bool:
+                               first_name: str = None, last_name: str = None) -> bool:
         """Создание или обновление пользователя"""
         query = """
         INSERT INTO users (id, username, first_name, last_name, created_at, updated_at)
@@ -414,8 +413,3 @@ class PriceHistoryRepository:
         rows = await db.fetch("SELECT * FROM price_history")
         return [dict(row) for row in rows]
 
-    @staticmethod
-    async def get_price_history(symbol: str, days: int = 30) -> List[Dict]:
-        """Получение истории цен (заглушка, можно расширить)"""
-        # Здесь можно добавить логику получения истории
-        return []

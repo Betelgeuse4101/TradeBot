@@ -18,6 +18,7 @@ class Keyboards:
                 [KeyboardButton(text="📊 Мои портфели")],
                 [KeyboardButton(text="➕ Создать портфель")],
                 [KeyboardButton(text="🔔 Мои уведомления")],
+                [KeyboardButton(text="📈 Популярные тикеры")],
                 [KeyboardButton(text="📋 Помощь")]
             ],
             resize_keyboard=True,
@@ -249,3 +250,30 @@ class Keyboards:
             [InlineKeyboardButton(text="🔄 Обновить цены", callback_data=f"refresh_portfolio_{portfolio_id}")],
             [InlineKeyboardButton(text="↩️ Назад", callback_data=f"portfolio_{portfolio_id}")]
         ])
+
+    @staticmethod
+    def get_popular_tickers_page(page: int = 0, total_pages: int = 10):
+        """Клавиатура для навигации по страницам популярных тикеров"""
+        buttons = []
+
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(
+                InlineKeyboardButton(text="⬅️ Назад", callback_data=f"pop_page_{page - 1}")
+            )
+
+        nav_buttons.append(
+            InlineKeyboardButton(text=f"📄 {page + 1}/{total_pages}", callback_data="ignore")
+        )
+
+        if page < total_pages - 1:
+            nav_buttons.append(
+                InlineKeyboardButton(text="➡️ Вперед", callback_data=f"pop_page_{page + 1}")
+            )
+
+        if nav_buttons:
+            buttons.append(nav_buttons)
+
+        buttons.append([InlineKeyboardButton(text="↩️ Главное меню", callback_data="back_to_main")])
+
+        return InlineKeyboardMarkup(inline_keyboard=buttons)

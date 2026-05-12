@@ -12,7 +12,6 @@ import asyncio
 
 from constants import LOG_DETAILED_FORMAT, LOG_SIMPLE_FORMAT, LOG_DATE_FORMAT, LOG_SEPARATOR
 
-# Создаем директорию для логов
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
