@@ -14,6 +14,7 @@ class PortfolioService:
 
     async def calculate_portfolio_summary(self, portfolio_id: int) -> Dict[str, Any]:
         """Мгновенный расчет портфеля со всей статистикой из локальной БД"""
+        from services.price_service import price_service
 
         portfolio = await PortfolioRepository.get(portfolio_id)
         if not portfolio:
@@ -32,7 +33,9 @@ class PortfolioService:
                 'assets': [],
                 'type_allocation': {},
                 'currency_allocation': {},
-                'updated_at': datetime.now().isoformat()
+                'updated_at': datetime.now().isoformat(),
+                'is_market_open': price_service._is_market_open(),
+                'stale_data': False
             }
 
         total_value = Decimal('0')
@@ -40,15 +43,24 @@ class PortfolioService:
         assets_data = []
         type_allocation = {}
         currency_allocation = {}
+        stale_data = False
 
         for asset in assets:
             quantity = asset['quantity']
-            purchase_price = asset['purchase_price']
+            purchase_price = asset['purchase_price']  # Пользовательская цена покупки
 
-            current_price = asset['current_price'] or purchase_price
+            # ВАЖНО: Получаем ТЕКУЩУЮ РЫНОЧНУЮ цену, а не сохраненную
+            current_price = await price_service.get_price(asset['symbol'])
+            if not current_price:
+                current_price = asset['current_price'] or purchase_price
 
-            current_value = quantity * current_price
-            cost = quantity * purchase_price
+            # Проверяем свежесть цены
+            is_fresh = price_service.is_price_fresh(asset['symbol'])
+            if not is_fresh and current_price != purchase_price:
+                stale_data = True
+
+            current_value = quantity * current_price  # Считаем по рыночной цене
+            cost = quantity * purchase_price  # Считаем по пользовательской цене
 
             total_value += current_value
             total_cost += cost
@@ -63,6 +75,9 @@ class PortfolioService:
                 'profit': profit,
                 'profit_percent': profit_percent,
                 'weight': Decimal('0'),
+                'is_price_fresh': is_fresh,
+                'current_market_price': current_price,  # Добавляем рыночную цену
+                'purchase_price_user': purchase_price,  # Сохраняем пользовательскую
             }
             assets_data.append(asset_data)
 
@@ -94,7 +109,9 @@ class PortfolioService:
             'assets': assets_data,
             'type_allocation': type_allocation_pct,
             'currency_allocation': currency_allocation_pct,
-            'updated_at': datetime.now().isoformat()
+            'updated_at': datetime.now().isoformat(),
+            'is_market_open': price_service._is_market_open(),
+            'stale_data': stale_data
         }
 
         await PortfolioRepository.update_value(portfolio_id, total_value)
@@ -103,16 +120,25 @@ class PortfolioService:
 
     async def calculate_asset_details(self, asset_id: int) -> Dict[str, Any]:
         """Мгновенный расчет по активу"""
+        from services.price_service import price_service
+
         asset = await AssetRepository.get(asset_id)
         if not asset:
             return {}
 
         quantity = asset['quantity']
-        purchase_price = asset['purchase_price']
-        current_price = asset['current_price'] or purchase_price
+        purchase_price = asset['purchase_price']  # Пользовательская цена
 
-        current_value = quantity * current_price
-        cost = quantity * purchase_price
+        # ВАЖНО: Всегда получаем свежую рыночную цену
+        current_price = await price_service.get_price(asset['symbol'])
+        if not current_price:
+            current_price = asset['current_price'] or purchase_price
+
+        # Проверяем свежесть цены
+        is_fresh = price_service.is_price_fresh(asset['symbol'])
+
+        current_value = quantity * current_price  # По рыночной цене
+        cost = quantity * purchase_price  # По пользовательской цене
         profit = current_value - cost
         profit_percent = (profit / cost * 100) if cost > 0 else Decimal('0')
 
@@ -122,6 +148,10 @@ class PortfolioService:
             'cost': cost,
             'profit': profit,
             'profit_percent': profit_percent,
+            'is_price_fresh': is_fresh,
+            'is_market_open': price_service._is_market_open(),
+            'current_market_price': current_price,  # Добавляем рыночную цену
+            'purchase_price_user': purchase_price,  # Добавляем пользовательскую
         }
 
     def _calculate_percentages(self, allocation: Dict[str, Decimal], total: Decimal) -> Dict[str, float]:

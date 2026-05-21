@@ -10,7 +10,7 @@ from logger import get_logger, log_function_call
 from services.price_service import price_service
 from services.portfolio_service import portfolio_service
 from utils import format_money, format_percent
-from callback_utils import safe_callback_answer, safe_edit_message  # Добавили импорт безопасных функций
+from callback_utils import safe_callback_answer, safe_edit_message, auto_delete_message
 from constants import SYSTEM_COMMANDS
 
 router = Router()
@@ -26,6 +26,7 @@ class PortfolioState(StatesGroup):
 
 
 @router.message(F.text == "📊 Мои портфели")
+@auto_delete_message(delay=1)
 @log_function_call()
 async def show_portfolios(message: Message):
     """Показывает список портфелей"""
@@ -51,6 +52,7 @@ async def show_portfolios(message: Message):
 
 
 @router.message(F.text == "➕ Создать портфель")
+@auto_delete_message(delay=1)
 @log_function_call()
 async def create_portfolio_start(message: Message, state: FSMContext):
     """Начало создания портфеля"""
@@ -79,18 +81,16 @@ async def create_portfolio_callback(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(PortfolioState.waiting_for_name)
+@auto_delete_message(delay=1)
 @log_function_call()
 async def process_portfolio_name(message: Message, state: FSMContext):
     """Обработка названия портфеля"""
-    # Проверка на системные команды
     if message.text in SYSTEM_COMMANDS:
         await state.clear()
-        # Удаляем сообщение пользователя
         try:
             await message.delete()
         except:
             pass
-        # Перенаправляем на нужный обработчик
         if message.text == "📊 Мои портфели":
             await show_portfolios(message)
         elif message.text == "➕ Создать портфель":
@@ -135,10 +135,10 @@ async def process_portfolio_name(message: Message, state: FSMContext):
 
 
 @router.message(PortfolioState.waiting_for_description)
+@auto_delete_message(delay=1)
 @log_function_call()
 async def process_portfolio_description(message: Message, state: FSMContext):
     """Обработка описания портфеля"""
-    # Проверка на системные команды
     if message.text in SYSTEM_COMMANDS:
         await state.clear()
         try:
@@ -202,14 +202,13 @@ async def process_portfolio_description(message: Message, state: FSMContext):
 @router.callback_query(PortfolioState.waiting_for_description, F.data == "skip")
 @log_function_call()
 async def process_skip_portfolio_description(callback: CallbackQuery, state: FSMContext):
-    """Обработка кнопки 'Пропустить' при создании (сохраняем без описания)"""
+    """Обработка кнопки 'Пропустить' при создании"""
     await callback.answer()
 
     data = await state.get_data()
     name = data.get('name')
     user_id = callback.from_user.id
 
-    # Создаем портфель с пустым описанием (None)
     portfolio_id = await PortfolioRepository.create(
         user_id=user_id,
         name=name,
@@ -218,7 +217,6 @@ async def process_skip_portfolio_description(callback: CallbackQuery, state: FSM
 
     await state.clear()
 
-    # Убираем старое сообщение с клавиатурой
     try:
         await callback.message.delete()
     except:
@@ -240,13 +238,12 @@ async def process_skip_portfolio_description(callback: CallbackQuery, state: FSM
 @router.callback_query(PortfolioState.waiting_for_edit_description, F.data == "skip")
 @log_function_call()
 async def process_skip_edit_portfolio_description(callback: CallbackQuery, state: FSMContext):
-    """Обработка кнопки 'Пропустить' при редактировании (очищаем описание)"""
+    """Обработка кнопки 'Пропустить' при редактировании"""
     await callback.answer()
 
     data = await state.get_data()
     portfolio_id = data['portfolio_id']
 
-    # Обновляем описание на None (очищаем)
     success = await PortfolioRepository.update_description(portfolio_id, None)
 
     await state.clear()
@@ -266,6 +263,7 @@ async def process_skip_edit_portfolio_description(callback: CallbackQuery, state
             "❌ Ошибка при обновлении описания",
             reply_markup=Keyboards.get_back_button(f"portfolio_{portfolio_id}")
         )
+
 
 @router.callback_query(F.data.startswith("portfolio_"))
 @log_function_call()
@@ -290,7 +288,7 @@ async def show_portfolio_detail(callback: CallbackQuery):
     profit_icon = "🟢" if total_profit >= 0 else "🔴"
     profit_text = f"{profit_icon} {format_money(total_profit)} ({format_percent(total_profit_percent)})"
 
-    market_status = "🟢 Рынок открыт" if price_service._is_market_open() else "🔴 Рынок закрыт"
+    market_status = "🟢 Рынок открыт" if summary['is_market_open'] else "🔴 Рынок закрыт"
 
     response = f"""
 📊 <b>{portfolio['name']}</b>
@@ -381,12 +379,11 @@ async def show_portfolio_stats(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("refresh_portfolio_"))
 @log_function_call()
 async def refresh_portfolio(callback: CallbackQuery):
-    """Кнопка Обновить (перерисовывает статистику по актуальному кэшу)"""
+    """Кнопка Обновить"""
     await safe_callback_answer(callback, "🔄 Актуализируем данные...")
 
     portfolio_id = int(callback.data.replace("refresh_portfolio_", ""))
 
-    # Безопасное обновление данных коллбека (избегаем ошибки Instance is frozen)
     new_callback = callback.model_copy(update={"data": f"stats_{portfolio_id}"})
     await show_portfolio_stats(new_callback)
 
@@ -405,7 +402,6 @@ async def edit_portfolio(callback: CallbackQuery, state: FSMContext):
         return
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        # ИЗМЕНЕНО: Новые уникальные префиксы edit_name_ и edit_desc_
         [InlineKeyboardButton(text="✏️ Изменить название", callback_data=f"edit_name_{portfolio_id}")],
         [InlineKeyboardButton(text="📝 Изменить описание", callback_data=f"edit_desc_{portfolio_id}")],
         [InlineKeyboardButton(text="🗑️ Удалить портфель", callback_data=f"delete_portfolio_{portfolio_id}")],
@@ -428,7 +424,6 @@ async def edit_portfolio_name(callback: CallbackQuery, state: FSMContext):
     """Редактирование названия портфеля"""
     await safe_callback_answer(callback)
 
-    # ИЗМЕНЕНО: Отрезаем правильный префикс
     portfolio_id = int(callback.data.replace("edit_name_", ""))
     portfolio = await PortfolioRepository.get(portfolio_id)
 
@@ -449,17 +444,16 @@ async def edit_portfolio_name(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(PortfolioState.waiting_for_edit_name)
+@auto_delete_message(delay=1)
 @log_function_call()
 async def process_edit_portfolio_name(message: Message, state: FSMContext):
     """Обработка нового названия портфеля"""
-    # Проверка на системные команды
     if message.text in SYSTEM_COMMANDS:
         await state.clear()
         try:
             await message.delete()
         except:
             pass
-        # Перенаправляем
         if message.text == "📊 Мои портфели":
             await show_portfolios(message)
         elif message.text == "🔔 Мои уведомления":
@@ -507,7 +501,6 @@ async def edit_portfolio_description(callback: CallbackQuery, state: FSMContext)
     """Редактирование описания портфеля"""
     await safe_callback_answer(callback)
 
-    # ИЗМЕНЕНО: Отрезаем правильный префикс
     portfolio_id = int(callback.data.replace("edit_desc_", ""))
     portfolio = await PortfolioRepository.get(portfolio_id)
 
@@ -528,6 +521,7 @@ async def edit_portfolio_description(callback: CallbackQuery, state: FSMContext)
 
 
 @router.message(PortfolioState.waiting_for_edit_description)
+@auto_delete_message(delay=1)
 @log_function_call()
 async def process_edit_portfolio_description(message: Message, state: FSMContext):
     """Обработка нового описания портфеля"""
@@ -591,7 +585,6 @@ async def delete_portfolio(callback: CallbackQuery):
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            # ИЗМЕНЕНО: теперь используем префикс confirm_delete_portfolio_
             InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete_portfolio_{portfolio_id}"),
             InlineKeyboardButton(text="❌ Нет", callback_data=f"portfolio_{portfolio_id}")
         ]
@@ -606,14 +599,12 @@ async def delete_portfolio(callback: CallbackQuery):
     )
 
 
-# ИЗМЕНЕНО: фильтр теперь ловит строго confirm_delete_portfolio_
 @router.callback_query(F.data.startswith("confirm_delete_portfolio_"))
 @log_function_call()
 async def confirm_delete_portfolio(callback: CallbackQuery):
     """Подтверждение удаления портфеля"""
     await safe_callback_answer(callback)
 
-    # ИЗМЕНЕНО: отрезаем правильный префикс
     portfolio_id = int(callback.data.replace("confirm_delete_portfolio_", ""))
     portfolio = await PortfolioRepository.get(portfolio_id)
 

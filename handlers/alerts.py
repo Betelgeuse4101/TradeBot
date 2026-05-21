@@ -9,6 +9,7 @@ from keyboards import Keyboards
 from logger import get_logger, log_function_call
 from services.price_service import price_service
 from utils import parse_decimal, validate_positive_decimal, format_money
+from callback_utils import auto_delete_message, safe_callback_answer
 
 router = Router()
 logger = get_logger('alerts')
@@ -22,6 +23,7 @@ class AlertState(StatesGroup):
 
 
 @router.message(F.text == "🔔 Мои уведомления")
+@auto_delete_message(delay=1)
 @log_function_call()
 async def show_alerts(message: Message):
     """Показывает список уведомлений"""
@@ -103,7 +105,6 @@ async def create_portfolio_alert(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("❌ Портфель не найден")
         return
 
-    # Обновляем цены портфеля перед созданием уведомления
     try:
         await price_service.update_portfolio_prices(portfolio_id)
     except Exception as e:
@@ -114,11 +115,9 @@ async def create_portfolio_alert(callback: CallbackQuery, state: FSMContext):
         portfolio_id=portfolio_id
     )
 
-    # Проверяем, есть ли активы в портфеле
     assets = await AssetRepository.get_portfolio_assets(portfolio_id)
 
     if assets:
-        # Показываем выбор: весь портфель или конкретный актив
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(
@@ -139,7 +138,6 @@ async def create_portfolio_alert(callback: CallbackQuery, state: FSMContext):
             reply_markup=keyboard
         )
     else:
-        # Если нет активов, сразу показываем типы уведомлений для портфеля
         await show_alert_type_selection(callback, state, 'portfolio', portfolio_id)
 
 
@@ -173,7 +171,6 @@ async def alert_choose_asset(callback: CallbackQuery, state: FSMContext):
         )
         return
 
-    # Показываем первые 10 активов
     buttons = []
     for asset in assets[:10]:
         buttons.append([
@@ -233,7 +230,6 @@ async def paginate_assets_alert(callback: CallbackQuery):
     """Пагинация при выборе актива для создания уведомления"""
     await callback.answer()
 
-    # Разбираем callback_data: more_assets_alert_{portfolio_id}_{offset}
     parts = callback.data.split("_")
     if len(parts) < 5:
         return
@@ -307,15 +303,14 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
     """Выбор типа уведомления"""
     await callback.answer()
 
-    # Разбираем callback_data: alert_type_{condition}_{direction}_{target_id}
     parts = callback.data.replace("alert_type_", "").split("_")
 
     if len(parts) < 3:
         await callback.message.edit_text("❌ Ошибка формата данных")
         return
 
-    condition_type = parts[0]  # price или percent
-    direction = parts[1]  # up или down
+    condition_type = parts[0]
+    direction = parts[1]
     target_id = int(parts[2])
 
     await state.update_data(
@@ -330,7 +325,6 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
     if data['alert_type'] == 'portfolio':
         portfolio_id = target_id
 
-        # Получаем текущую стоимость портфеля
         try:
             summary = await price_service.calculate_portfolio_value(portfolio_id)
             current_value = summary['total_value']
@@ -352,7 +346,6 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
         asset = await AssetRepository.get(asset_id)
 
         if asset:
-            # Получаем актуальную цену
             if not asset['current_price']:
                 try:
                     price = await price_service.get_price(asset['symbol'])
@@ -377,11 +370,14 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AlertState.waiting_for_target_value)
+@auto_delete_message(delay=1)
 @log_function_call()
 async def process_alert_target(message: Message, state: FSMContext):
     """Обработка целевого значения"""
-    target_text = message.text.strip().replace(',', '.')
-    target_text = target_text.replace('%', '').strip()
+    raw_text = message.text.strip()
+    logger.info(f"🎯 Пользователь ввел цель: '{raw_text}'")
+
+    target_text = raw_text.replace('%', '').strip()
 
     data = await state.get_data()
     condition_type = data['condition_type']
@@ -389,41 +385,51 @@ async def process_alert_target(message: Message, state: FSMContext):
     user_id = message.from_user.id
 
     if condition_type == 'percent':
-        try:
-            target_value = Decimal(target_text)
+        target_value = parse_decimal(target_text)
 
-            if target_value < 0:
-                target_value = abs(target_value)
-                await message.answer(
-                    f"⚠️ Процент преобразован в положительное значение: {target_value}%\n"
-                    f"Направление '{direction}' определяет логику срабатывания."
-                )
-
-            if target_value == 0:
-                await message.answer(
-                    "❌ Процент не может быть равен 0.\n"
-                    "Установите ненулевое значение."
-                )
-                return
-
-            if target_value > 1000:
-                await message.answer(
-                    f"❌ Слишком большой процент (макс. 1000%).\n"
-                    f"Вы ввели: {target_value}%"
-                )
-                return
-
-        except (ValueError, ArithmeticError):
+        if target_value is None:
             await message.answer(
                 "❌ Неверный формат процента.\n\n"
-                "Введите число (например, 10 или 5.5):"
+                "Примеры правильного ввода:\n"
+                "• 10\n"
+                "• 5.5\n"
+                "• 5,5\n"
+                "• 10%"
+            )
+            return
+
+        if target_value < 0:
+            target_value = abs(target_value)
+            await message.answer(
+                f"⚠️ Процент преобразован в положительное значение: {target_value}%\n"
+                f"Направление '{direction}' определяет логику срабатывания."
+            )
+
+        if target_value == 0:
+            await message.answer(
+                "❌ Процент не может быть равен 0.\n"
+                "Установите ненулевое значение."
+            )
+            return
+
+        if target_value > 1000:
+            await message.answer(
+                f"❌ Слишком большой процент (макс. 1000%).\n"
+                f"Вы ввели: {target_value}%"
             )
             return
     else:
         target_value = parse_decimal(target_text)
+        logger.info(f"🎯 Распознанная цена цели: {target_value}")
+
         if not validate_positive_decimal(target_value):
             await message.answer(
-                "❌ Введите положительное число (например, 100 или 1500.50):"
+                "❌ Некорректная цена.\n\n"
+                "Примеры правильного ввода:\n"
+                "• 100\n"
+                "• 1 500.50\n"
+                "• 2,500.75\n"
+                "• 1.000,00"
             )
             return
 
@@ -446,7 +452,7 @@ async def process_alert_target(message: Message, state: FSMContext):
 
             if condition_type == 'price':
                 current_value = total_value
-            else:  # percent
+            else:
                 if total_cost > 0:
                     current_value = ((total_value - total_cost) / total_cost) * 100
                 else:
@@ -461,13 +467,12 @@ async def process_alert_target(message: Message, state: FSMContext):
 
             if condition_type == 'price':
                 current_value = current_price
-            else:  # percent
+            else:
                 if asset['purchase_price'] > 0:
                     current_value = ((current_price - asset['purchase_price']) / asset['purchase_price']) * 100
                 else:
                     current_value = Decimal('0')
 
-    # Проверяем логику
     if current_value is not None:
         if condition_type == 'price':
             if direction == 'up' and target_value <= current_value:
@@ -492,7 +497,7 @@ async def process_alert_target(message: Message, state: FSMContext):
                 )
                 return
 
-        else:  # percent
+        else:
             if direction == 'up' and current_value >= target_value:
                 await message.answer(
                     f"⚠️ <b>Ошибка в уведомлении!</b>\n\n"
@@ -514,7 +519,6 @@ async def process_alert_target(message: Message, state: FSMContext):
                     f"<i>Укажите процент больше по модулю</i>"
                 )
                 return
-
 
     alert_id = None
 

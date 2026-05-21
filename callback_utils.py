@@ -4,23 +4,41 @@ from typing import Optional, Any
 from logger import get_logger
 from config import Config
 import asyncio
+from functools import wraps
 
 logger = get_logger('callback_utils')
+
+
+def auto_delete_message(delay: int = 3):
+    """
+    Декоратор для автоматического удаления сообщения пользователя после обработки команды
+    """
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(message: Message, *args, **kwargs):
+            try:
+                result = await func(message, *args, **kwargs)
+                try:
+                    await message.delete()
+                    logger.debug(f"🗑️ Сообщение пользователя {message.from_user.id} удалено")
+                except Exception as e:
+                    logger.debug(f"⚠️ Не удалось удалить сообщение: {e}")
+
+                return result
+            except Exception as e:
+                logger.error(f"Ошибка в {func.__name__}: {e}")
+                raise
+
+        return wrapper
+
+    return decorator
 
 
 async def safe_callback_answer(callback: CallbackQuery, text: Optional[str] = None, show_alert: bool = False,
                                max_retries: int = Config.TELEGRAM_MAX_RETRIES) -> bool:
     """
     Безопасный ответ на callback с обработкой устаревших запросов и сетевых ошибок
-
-    Args:
-        callback: CallbackQuery объект
-        text: Текст уведомления
-        show_alert: Показывать как alert
-        max_retries: Максимальное количество попыток
-
-    Returns:
-        bool: True если успешно, False если callback устарел
     """
     for attempt in range(max_retries):
         try:
@@ -57,16 +75,6 @@ async def safe_edit_message(
 ) -> bool:
     """
     Безопасное редактирование сообщения с обработкой ошибок и сетевых проблем
-
-    Args:
-        callback: CallbackQuery объект
-        text: Новый текст
-        reply_markup: Новая клавиатура
-        max_retries: Максимальное количество попыток
-        **kwargs: Дополнительные параметры
-
-    Returns:
-        bool: True если успешно, False если не удалось
     """
     for attempt in range(max_retries):
         try:
@@ -104,13 +112,6 @@ async def safe_edit_message(
 async def safe_delete_message(message: Message, max_retries: int = Config.TELEGRAM_MAX_RETRIES) -> bool:
     """
     Безопасное удаление сообщения
-
-    Args:
-        message: Сообщение для удаления
-        max_retries: Максимальное количество попыток
-
-    Returns:
-        bool: True если успешно, False если не удалось
     """
     for attempt in range(max_retries):
         try:
@@ -148,16 +149,6 @@ async def safe_send_message(
 ) -> Optional[Message]:
     """
     Безопасная отправка нового сообщения
-
-    Args:
-        callback: CallbackQuery объект
-        text: Текст сообщения
-        reply_markup: Клавиатура
-        max_retries: Максимальное количество попыток
-        **kwargs: Дополнительные параметры
-
-    Returns:
-        Optional[Message]: Отправленное сообщение или None
     """
     for attempt in range(max_retries):
         try:

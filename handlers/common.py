@@ -2,33 +2,27 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
-from aiogram.exceptions import TelegramBadRequest
 
 from database.repositories import UserRepository
 from keyboards import Keyboards
 from logger import get_logger, log_function_call
 from constants import WELCOME_MESSAGE, HELP_MESSAGE, POPULAR_TICKERS
-from callback_utils import safe_callback_answer, safe_edit_message, safe_delete_message
+from callback_utils import safe_callback_answer, safe_edit_message, safe_delete_message, auto_delete_message
 
 router = Router()
 logger = get_logger('handlers.common')
 
 
 @router.message(Command("start"))
+@auto_delete_message(delay=1)
 @log_function_call()
 async def cmd_start(message: Message):
     """Обработчик команды /start"""
     user = message.from_user
 
-    # Сохраняем пользователя
-    await UserRepository.create_or_update(
-        user_id=user.id,
-        username=user.username,
-        first_name=user.first_name,
-        last_name=user.last_name
-    )
+    await UserRepository.create_or_update(user_id=user.id)
 
-    logger.info(f"👤 Новый пользователь: {user.id} (@{user.username})")
+    logger.info(f"👤 Новый пользователь: {user.id}")
 
     await message.answer(
         WELCOME_MESSAGE,
@@ -37,6 +31,7 @@ async def cmd_start(message: Message):
 
 
 @router.message(Command("help"))
+@auto_delete_message(delay=1)
 @log_function_call()
 async def cmd_help(message: Message):
     """Обработчик команды /help"""
@@ -44,6 +39,7 @@ async def cmd_help(message: Message):
 
 
 @router.message(Command("cancel"))
+@auto_delete_message(delay=1)
 @log_function_call()
 async def cmd_cancel(message: Message, state: FSMContext):
     """Обработчик команды /cancel"""
@@ -55,6 +51,7 @@ async def cmd_cancel(message: Message, state: FSMContext):
 
 
 @router.message(F.text == "📋 Помощь")
+@auto_delete_message(delay=1)
 @log_function_call()
 async def show_help(message: Message):
     """Показывает помощь"""
@@ -68,7 +65,6 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext):
     await safe_callback_answer(callback)
     await state.clear()
 
-    # Пытаемся удалить сообщение
     await safe_delete_message(callback.message)
 
     await callback.message.answer(
@@ -84,7 +80,6 @@ async def cancel_action(callback: CallbackQuery, state: FSMContext):
     await safe_callback_answer(callback, "❌ Действие отменено")
     await state.clear()
 
-    # Пытаемся удалить сообщение
     await safe_delete_message(callback.message)
 
     await callback.message.answer(
@@ -93,15 +88,14 @@ async def cancel_action(callback: CallbackQuery, state: FSMContext):
     )
 
 
-@router.message(F.text == "📈 Популярные тикеры")
+@router.message(F.text == "📈 Популярные активы")
+@auto_delete_message(delay=1)
 @log_function_call()
 async def show_popular_tickers(message: Message):
     """Показывает список популярных тикеров"""
-
     items_per_page = 10
     total_pages = (len(POPULAR_TICKERS) + items_per_page - 1) // items_per_page
 
-    # Формируем текст первой страницы
     text = "📈 <b>Популярные тикеры MOEX</b>\n\n"
 
     for i, ticker in enumerate(POPULAR_TICKERS[:items_per_page]):

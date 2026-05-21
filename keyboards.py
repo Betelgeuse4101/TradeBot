@@ -18,7 +18,7 @@ class Keyboards:
                 [KeyboardButton(text="📊 Мои портфели")],
                 [KeyboardButton(text="➕ Создать портфель")],
                 [KeyboardButton(text="🔔 Мои уведомления")],
-                [KeyboardButton(text="📈 Популярные тикеры")],
+                [KeyboardButton(text="📈 Популярные активы")],
                 [KeyboardButton(text="📋 Помощь")]
             ],
             resize_keyboard=True,

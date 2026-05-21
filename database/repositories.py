@@ -11,20 +11,16 @@ class UserRepository:
     """Репозиторий для работы с пользователями"""
 
     @staticmethod
-    async def create_or_update(user_id: int, username: str = None,
-                               first_name: str = None, last_name: str = None) -> bool:
-        """Создание или обновление пользователя"""
+    async def create_or_update(user_id: int) -> bool:
+        """Создание пользователя по ID"""
         query = """
-        INSERT INTO users (id, username, first_name, last_name, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO users (id, created_at, updated_at)
+        VALUES ($1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT (id) DO UPDATE SET
-            username = EXCLUDED.username,
-            first_name = EXCLUDED.first_name,
-            last_name = EXCLUDED.last_name,
             updated_at = CURRENT_TIMESTAMP
         """
         try:
-            await db.execute(query, user_id, username, first_name, last_name)
+            await db.execute(query, user_id)
             logger.info(f"👤 Пользователь {user_id} сохранен")
             return True
         except Exception as e:
@@ -34,7 +30,7 @@ class UserRepository:
     @staticmethod
     async def get(user_id: int) -> Optional[Dict]:
         """Получение пользователя"""
-        query = "SELECT * FROM users WHERE id = $1"
+        query = "SELECT id, created_at, updated_at FROM users WHERE id = $1"
         row = await db.fetchrow(query, user_id)
         return dict(row) if row else None
 
@@ -377,7 +373,7 @@ class AlertRepository:
         query = "DELETE FROM alerts WHERE id = $1"
         try:
             await db.execute(query, alert_id)
-            logger.info(f"🗑️ Уведомление {alert_id} удалено")
+            logger.info(f"Уведомление {alert_id} удалено")
             return True
         except Exception as e:
             logger.error(f"Ошибка удаления уведомления {alert_id}: {e}")
@@ -412,4 +408,3 @@ class PriceHistoryRepository:
         """Получение всех цен"""
         rows = await db.fetch("SELECT * FROM price_history")
         return [dict(row) for row in rows]
-

@@ -10,8 +10,8 @@ from keyboards import Keyboards
 from logger import get_logger, log_function_call
 from services.price_service import price_service
 from services.portfolio_service import portfolio_service
-from utils import parse_decimal, format_money, validate_positive_decimal, format_percent
-from callback_utils import safe_callback_answer, safe_edit_message
+from utils import parse_decimal, format_money, validate_positive_decimal, format_percent, format_quantity
+from callback_utils import safe_callback_answer, safe_edit_message, auto_delete_message
 from constants import SYSTEM_COMMANDS
 
 router = Router()
@@ -22,6 +22,8 @@ class AssetState(StatesGroup):
     """Состояния для добавления актива"""
     waiting_for_symbol = State()
     waiting_for_quantity = State()
+    waiting_for_price_choice = State()
+    waiting_for_manual_price = State()
     waiting_for_confirmation = State()
     waiting_for_edit_quantity = State()
 
@@ -56,6 +58,7 @@ async def add_asset_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AssetState.waiting_for_symbol)
+@auto_delete_message(delay=1)
 @log_function_call()
 async def process_asset_symbol(message: Message, state: FSMContext):
     """Обработка символа актива"""
@@ -84,7 +87,6 @@ async def process_asset_symbol(message: Message, state: FSMContext):
         )
         return
 
-    # При добавлении нового актива запрашиваем актуальную цену без кэша
     current_price = await price_service.get_price(symbol, use_cache=False)
 
     await state.update_data(
@@ -96,36 +98,24 @@ async def process_asset_symbol(message: Message, state: FSMContext):
         info=info
     )
 
-    if current_price and current_price > 0:
-        await state.set_state(AssetState.waiting_for_quantity)
+    await state.set_state(AssetState.waiting_for_quantity)
 
-        market_status = "🟢 Биржа открыта" if price_service._is_market_open() else "🔴 Биржа закрыта"
+    market_status = "🟢 Биржа открыта" if price_service._is_market_open() else "🔴 Биржа закрыта"
+    price_text = format_money(current_price, info.get('currency', 'RUB')) if current_price else "не удалось получить"
 
-        await status_msg.edit_text(
-            f"✅ Найден актив: <b>{info.get('name', symbol)}</b> ({symbol})\n\n"
-            f"Тип: {info.get('asset_type_display', 'Акция')}\n"
-            f"Валюта: {info.get('currency', 'RUB')}\n"
-            f"{market_status}\n\n"
-            f"💰 Текущая цена: <b>{format_money(current_price, info.get('currency', 'RUB'))}</b>\n\n"
-            f"🔢 Введите количество актива (например, 10 или 0.5):",
-            reply_markup=Keyboards.get_cancel_keyboard()
-        )
-    else:
-        await state.update_data(use_manual_price=False)
-        await state.set_state(AssetState.waiting_for_quantity)
-
-        await status_msg.edit_text(
-            f"✅ Найден актив: <b>{info.get('name', symbol)}</b> ({symbol})\n\n"
-            f"Тип: {info.get('asset_type_display', 'Акция')}\n"
-            f"Валюта: {info.get('currency', 'RUB')}\n\n"
-            f"⚠️ Не удалось получить текущую цену. "
-            f"Цена будет определена при следующем обновлении.\n\n"
-            f"🔢 Введите количество актива (например, 10 или 0.5):",
-            reply_markup=Keyboards.get_cancel_keyboard()
-        )
+    await status_msg.edit_text(
+        f"✅ Найден актив: <b>{info.get('name', symbol)}</b> ({symbol})\n\n"
+        f"Тип: {info.get('asset_type_display', 'Акция')}\n"
+        f"Валюта: {info.get('currency', 'RUB')}\n"
+        f"{market_status}\n\n"
+        f"💰 Текущая цена: <b>{price_text}</b>\n\n"
+        f"🔢 Введите количество актива (например, 10 или 0.5):",
+        reply_markup=Keyboards.get_cancel_keyboard()
+    )
 
 
 @router.message(AssetState.waiting_for_quantity)
+@auto_delete_message(delay=1)
 @log_function_call()
 async def process_asset_quantity(message: Message, state: FSMContext):
     """Обработка количества актива"""
@@ -137,50 +127,231 @@ async def process_asset_quantity(message: Message, state: FSMContext):
 
     await state.update_data(quantity=quantity)
     data = await state.get_data()
+    current_price = data.get('current_price')
 
-    if data.get('current_price'):
-        await show_confirmation(message, state)
-    else:
-        status_msg = await message.answer("⏳ Получаем актуальную цену...")
-        current_price = await price_service.get_price(data['symbol'], use_cache=False)
+    await state.set_state(AssetState.waiting_for_price_choice)
 
-        if current_price and current_price > 0:
-            await state.update_data(current_price=current_price)
-            await status_msg.delete()
-            await show_confirmation(message, state)
-        else:
-            await status_msg.edit_text(
-                f"❌ Не удалось получить цену для {data['symbol']}.\n\n"
-                f"Попробуйте позже или добавьте другой актив.",
-                reply_markup=Keyboards.get_cancel_keyboard()
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="💰 Использовать текущую цену MOEX",
+                callback_data="use_moex_price"
             )
+        ],
+        [
+            InlineKeyboardButton(
+                text="✏️ Ввести свою цену",
+                callback_data="use_manual_price"
+            )
+        ],
+        [
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
+        ]
+    ])
+
+    currency = data.get('currency', 'RUB')
+
+    if current_price and current_price > 0:
+        price_text = format_money(current_price, currency)
+        await message.answer(
+            f"📝 <b>Выберите цену покупки для {data['symbol']}</b>\n\n"
+            f"💰 Текущая рыночная цена: <b>{price_text}</b>\n\n"
+            f"Выберите, какую цену использовать:",
+            reply_markup=keyboard
+        )
+    else:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✏️ Ввести свою цену",
+                    callback_data="use_manual_price"
+                )
+            ],
+            [
+                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
+            ]
+        ])
+        await message.answer(
+            f"⚠️ <b>Текущая цена для {data['symbol']} недоступна</b>\n\n"
+            f"Пожалуйста, введите цену покупки вручную:",
+            reply_markup=keyboard
+        )
 
 
-async def show_confirmation(message: Message, state: FSMContext):
+@router.callback_query(AssetState.waiting_for_price_choice, F.data == "use_moex_price")
+@log_function_call()
+async def use_moex_price(callback: CallbackQuery, state: FSMContext):
+    """Использовать текущую цену с MOEX"""
+    await safe_callback_answer(callback)
+
+    data = await state.get_data()
+    current_price = data.get('current_price')
+
+    if not current_price or current_price <= 0:
+        await callback.message.edit_text(
+            "❌ Текущая цена недоступна. Пожалуйста, введите цену вручную.",
+            reply_markup=Keyboards.get_back_button("add_asset")
+        )
+        await state.set_state(AssetState.waiting_for_manual_price)
+        return
+
+    await state.update_data(purchase_price=current_price, price_choice='moex')
+    await show_confirmation(callback.message, state, callback)
+
+
+@router.callback_query(AssetState.waiting_for_price_choice, F.data == "use_manual_price")
+@log_function_call()
+async def use_manual_price(callback: CallbackQuery, state: FSMContext):
+    """Ввести свою цену"""
+    await safe_callback_answer(callback)
+    await state.set_state(AssetState.waiting_for_manual_price)
+    await state.update_data(price_choice='manual')
+
+    data = await state.get_data()
+    currency = data.get('currency', 'RUB')
+    current_price = data.get('current_price')
+
+    text = "✏️ <b>Введите цену покупки</b>\n\n"
+    text += f"Валюта: {currency}\n\n"
+
+    if current_price and current_price > 0:
+        text += f"💰 Текущая рыночная цена: {format_money(current_price, currency)}\n"
+        text += f"💡 Вы можете ввести другую цену, отличную от рыночной\n\n"
+
+    text += f"Введите цену (например, 150.50 или 2500):"
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=Keyboards.get_cancel_keyboard()
+    )
+
+
+@router.message(AssetState.waiting_for_manual_price)
+@auto_delete_message(delay=1)
+@log_function_call()
+async def process_manual_price(message: Message, state: FSMContext):
+    """Обработка ручного ввода цены"""
+    purchase_price = parse_decimal(message.text)
+
+    if not validate_positive_decimal(purchase_price):
+        await message.answer(
+            "❌ Введите положительное число (например, 150.50 или 2500):\n\n"
+            "Цена должна быть больше 0"
+        )
+        return
+
+    if purchase_price > Decimal('999999999999'):
+        await message.answer("❌ Слишком большая цена (максимум 999 999 999 999)")
+        return
+
+    await state.update_data(purchase_price=purchase_price)
+    await show_confirmation(message, state)
+
+
+async def show_confirmation(message: Message, state: FSMContext, callback: CallbackQuery = None):
     """Показывает подтверждение добавления актива"""
     data = await state.get_data()
 
     quantity = data['quantity']
-    current_price = data['current_price']
+    purchase_price = data['purchase_price']
+    current_price = data.get('current_price')
     currency = data.get('currency', 'RUB')
-    total = quantity * current_price
+    total = quantity * purchase_price
+
+    data_state = await state.get_data()
+    price_choice = data_state.get('price_choice', 'manual')
+
+    profit_info = ""
+    if price_choice == 'moex' and current_price and current_price > 0:
+        current_total = quantity * current_price
+        potential_profit = current_total - total
+
+        if abs(potential_profit) > Decimal('0.01'):
+            potential_profit_percent = (potential_profit / total * 100) if total > 0 else Decimal('0')
+            profit_icon = "🟢" if potential_profit >= 0 else "🔴"
+            profit_info = f"\n📈 Потенциальная прибыль: {profit_icon} {format_money(potential_profit, currency)} ({format_percent(potential_profit_percent)})"
+
+    price_source = "текущей рыночной MOEX" if price_choice == 'moex' else "введена вручную"
 
     await state.set_state(AssetState.waiting_for_confirmation)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_add_asset")],
+        [InlineKeyboardButton(text="↩️ Назад к выбору цены", callback_data="back_to_price_choice")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
     ])
 
-    await message.answer(
-        f"📝 <b>Подтверждение добавления актива</b>\n\n"
-        f"Актив: <b>{data['name']}</b> ({data['symbol']})\n"
-        f"Количество: <b>{quantity}</b>\n"
-        f"Цена: <b>{format_money(current_price, currency)}</b>\n"
-        f"Общая стоимость: <b>{format_money(total, currency)}</b>\n\n"
-        f"Всё верно?",
-        reply_markup=keyboard
-    )
+    response = f"""
+📝 <b>Подтверждение добавления актива</b>
+
+Актив: <b>{data['name']}</b> ({data['symbol']})
+Количество: <b>{quantity}</b>
+Цена покупки: <b>{format_money(purchase_price, currency)}</b> ({price_source})
+Общая стоимость: <b>{format_money(total, currency)}</b>{profit_info}
+
+Всё верно?
+    """
+
+    if callback:
+        await callback.message.edit_text(response, reply_markup=keyboard)
+    else:
+        await message.answer(response, reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "back_to_price_choice")
+@log_function_call()
+async def back_to_price_choice(callback: CallbackQuery, state: FSMContext):
+    """Возврат к выбору цены"""
+    await safe_callback_answer(callback)
+    await state.set_state(AssetState.waiting_for_price_choice)
+
+    data = await state.get_data()
+    current_price = data.get('current_price')
+    currency = data.get('currency', 'RUB')
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="💰 Использовать текущую цену MOEX",
+                callback_data="use_moex_price"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="✏️ Ввести свою цену",
+                callback_data="use_manual_price"
+            )
+        ],
+        [
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
+        ]
+    ])
+
+    if current_price and current_price > 0:
+        price_text = format_money(current_price, currency)
+        await callback.message.edit_text(
+            f"📝 <b>Выберите цену покупки для {data['symbol']}</b>\n\n"
+            f"💰 Текущая рыночная цена: <b>{price_text}</b>\n\n"
+            f"Выберите, какую цену использовать:",
+            reply_markup=keyboard
+        )
+    else:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✏️ Ввести свою цену",
+                    callback_data="use_manual_price"
+                )
+            ],
+            [
+                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
+            ]
+        ])
+        await callback.message.edit_text(
+            f"⚠️ <b>Текущая цена для {data['symbol']} недоступна</b>\n\n"
+            f"Пожалуйста, введите цену покупки вручную:",
+            reply_markup=keyboard
+        )
 
 
 @router.callback_query(F.data == "confirm_add_asset")
@@ -198,7 +369,7 @@ async def confirm_add_asset(callback: CallbackQuery, state: FSMContext):
             name=data['name'],
             asset_type=data['asset_type'],
             quantity=data['quantity'],
-            purchase_price=data['current_price'],
+            purchase_price=data['purchase_price'],
             currency=data.get('currency', 'RUB'),
             sector=data.get('info', {}).get('sector'),
             notes=None
@@ -207,12 +378,18 @@ async def confirm_add_asset(callback: CallbackQuery, state: FSMContext):
         await state.clear()
 
         if asset_id:
+            currency = data.get('currency', 'RUB')
+            total = data['quantity'] * data['purchase_price']
+            price_source = "текущей рыночной" if data['purchase_price'] == data.get(
+                'current_price') else "введенной вручную"
+
             await safe_edit_message(
                 callback,
                 f"✅ <b>Актив успешно добавлен!</b>\n\n"
                 f"Актив: {data['name']} ({data['symbol']})\n"
                 f"Количество: {data['quantity']}\n"
-                f"Цена покупки: {format_money(data['current_price'], data.get('currency', 'RUB'))}",
+                f"Цена покупки: {format_money(data['purchase_price'], currency)} ({price_source})\n"
+                f"Общая стоимость: {format_money(total, currency)}",
                 reply_markup=Keyboards.get_portfolio_actions(data['portfolio_id'])
             )
         else:
@@ -250,13 +427,18 @@ async def list_assets(callback: CallbackQuery):
     for asset in assets:
         quantity = asset['quantity']
         purchase_price = asset['purchase_price']
-        current_price = asset['current_price'] or purchase_price
+        current_price = await price_service.get_price(asset['symbol'])
+
+        if not current_price:
+            current_price = asset['current_price'] or purchase_price
+
         cost = quantity * purchase_price
         current_value = quantity * current_price
         profit = current_value - cost
         profit_percent = (profit / cost * 100) if cost > 0 else Decimal('0')
         asset['profit'] = profit
         asset['profit_percent'] = profit_percent
+        asset['current_price_display'] = current_price
 
     await safe_edit_message(
         callback,
@@ -292,7 +474,7 @@ async def view_asset(callback: CallbackQuery):
 💎 <b>{details['name']}</b> ({details['symbol']}) {market_status}
 
 🏷️ Тип: {asset_type_name}
-📦 Количество: {details['quantity']}
+📦 Количество: {format_quantity(details['quantity'])}
 💵 Валюта: {details['currency']}
 
 💰 Цена покупки: {format_money(details['purchase_price'], details['currency'])}
@@ -314,7 +496,7 @@ async def view_asset(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("refresh_asset_"))
 @log_function_call()
 async def refresh_asset_price(callback: CallbackQuery):
-    """Обновление цены актива (форсированно)"""
+    """Обновление цены актива"""
     await safe_callback_answer(callback, "🔄 Обновляем цену...")
 
     asset_id = int(callback.data.replace("refresh_asset_", ""))
@@ -361,6 +543,7 @@ async def edit_asset(callback: CallbackQuery):
         f"✏️ <b>Редактирование актива</b>\n\n"
         f"Актив: {asset['name']} ({asset['symbol']})\n"
         f"Текущее количество: {asset['quantity']}\n"
+        f"Цена покупки: {format_money(asset['purchase_price'], asset['currency'])}\n"
         f"Текущая цена: {format_money(asset['current_price'] or asset['purchase_price'], asset['currency'])}\n\n"
         f"Выберите действие:",
         reply_markup=keyboard
@@ -388,12 +571,13 @@ async def edit_asset_quantity(callback: CallbackQuery, state: FSMContext):
         f"✏️ <b>Изменение количества</b>\n\n"
         f"Актив: {asset['name']} ({asset['symbol']})\n"
         f"Текущее количество: {asset['quantity']}\n\n"
-        f"Введите новое количество:",
+        f"Введите новое количество (положительное число):",
         reply_markup=Keyboards.get_cancel_keyboard()
     )
 
 
 @router.message(AssetState.waiting_for_edit_quantity)
+@auto_delete_message(delay=1)
 @log_function_call()
 async def process_edit_quantity(message: Message, state: FSMContext):
     """Обработка нового количества"""
@@ -479,7 +663,6 @@ async def paginate_assets(callback: CallbackQuery):
     await safe_callback_answer(callback)
 
     parts = callback.data.split("_")
-    # Ожидаемый формат: more_assets_{portfolio_id}_{offset}
     if len(parts) < 4:
         return
 
