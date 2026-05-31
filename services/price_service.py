@@ -27,18 +27,15 @@ class PriceService:
         msk_tz = pytz.timezone('Europe/Moscow')
         now = datetime.now(msk_tz)
 
-        # Выходные
-        if now.weekday() >= 5:  # Суббота или воскресенье
+        if now.weekday() >= 5:
             return False
 
         current_hour = now.hour
         current_minute = now.minute
 
-        # До открытия
         if current_hour < Config.MOEX_TRADING_START_HOUR:
             return False
 
-        # После закрытия (18:45)
         if current_hour > Config.MOEX_TRADING_END_HOUR:
             return False
         if (current_hour == Config.MOEX_TRADING_END_HOUR and

@@ -104,18 +104,14 @@ def format_number_with_spaces(number: Decimal, decimal_places: int = 2) -> str:
     if number is None:
         return "0"
 
-    # Округляем
     quantize_str = '0.' + '0' * decimal_places
     rounded = number.quantize(Decimal(quantize_str), rounding=ROUND_HALF_UP)
 
-    # Получаем целую часть как int для правильного форматирования
     integer_part = int(rounded)
     fractional_part = rounded - Decimal(integer_part)
 
-    # Форматируем целую часть с пробелами
     formatted_integer = f"{integer_part:,}".replace(',', ' ')
 
-    # Добавляем дробную часть, если нужно
     if fractional_part != 0 and decimal_places > 0:
         frac_str = f"{fractional_part:.{decimal_places}f}".split('.')[1]
         frac_str = frac_str.rstrip('0')

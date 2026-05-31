@@ -358,16 +358,6 @@ class AlertRepository:
         await db.execute(query, alert_id)
 
     @staticmethod
-    async def reactivate(alert_id: int):
-        """Реактивировать уведомление"""
-        query = """
-        UPDATE alerts 
-        SET is_active = true, is_triggered = false, triggered_at = NULL 
-        WHERE id = $1
-        """
-        await db.execute(query, alert_id)
-
-    @staticmethod
     async def delete(alert_id: int) -> bool:
         """Удаление уведомления"""
         query = "DELETE FROM alerts WHERE id = $1"

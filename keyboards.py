@@ -225,18 +225,13 @@ class Keyboards:
         ])
 
     @staticmethod
-    def get_alert_actions(alert_id: int, is_active: bool = True, is_triggered: bool = False):
+    def get_alert_actions(alert_id: int, is_triggered: bool = False):
         """Действия с уведомлением"""
         buttons = []
 
         buttons.append([
             InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"delete_alert_{alert_id}"),
         ])
-
-        if not is_active or is_triggered:
-            buttons.append([
-                InlineKeyboardButton(text="🔄 Активировать", callback_data=f"reactivate_alert_{alert_id}")
-            ])
 
         buttons.append([
             InlineKeyboardButton(text="↩️ К списку", callback_data="back_to_alerts")

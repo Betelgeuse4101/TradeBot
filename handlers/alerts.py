@@ -626,12 +626,9 @@ async def view_alert(callback: CallbackQuery):
 📅 Создано: {created}
         """
 
-    is_active = alert['is_active'] and not alert['is_triggered']
-    is_triggered = alert['is_triggered']
-
     await callback.message.edit_text(
         text,
-        reply_markup=Keyboards.get_alert_actions(alert_id, is_active=is_active, is_triggered=is_triggered)
+        reply_markup=Keyboards.get_alert_actions(alert_id, is_triggered=alert['is_triggered'])
     )
 
 
@@ -651,26 +648,6 @@ async def delete_alert(callback: CallbackQuery):
     else:
         await callback.message.edit_text(
             "❌ Ошибка удаления уведомления",
-            reply_markup=Keyboards.get_back_button("back_to_alerts")
-        )
-
-
-@router.callback_query(F.data.startswith("reactivate_alert_"))
-@log_function_call()
-async def reactivate_alert(callback: CallbackQuery):
-    """Реактивация уведомления"""
-    await callback.answer()
-
-    alert_id = int(callback.data.replace("reactivate_alert_", ""))
-
-    if await AlertRepository.reactivate(alert_id):
-        await callback.message.edit_text(
-            "🔄 <b>Уведомление активировано</b>",
-            reply_markup=Keyboards.get_back_button("back_to_alerts")
-        )
-    else:
-        await callback.message.edit_text(
-            "❌ Ошибка активации уведомления. Проверьте, возможно, оно уже активно.",
             reply_markup=Keyboards.get_back_button("back_to_alerts")
         )
 

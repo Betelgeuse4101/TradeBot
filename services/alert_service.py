@@ -155,12 +155,11 @@ class AlertService:
             await self.trigger_alert(alert, current_value, current_price)
 
     async def trigger_alert(self, alert: Dict[str, Any], current_value: Decimal, current_price: Decimal = None):
-        """Срабатывание уведомления"""
+        """Срабатывание уведомления - отправка и удаление"""
         alert_id = alert['id']
         user_id = alert['user_id']
 
-        await AlertRepository.mark_triggered(alert_id)
-
+        # Отправляем уведомление
         if alert['alert_type'] == 'portfolio':
             text = await self._format_portfolio_alert(alert, current_value)
         else:
@@ -169,6 +168,10 @@ class AlertService:
         try:
             await self.bot.send_message(user_id, text)
             logger.info(f"📨 Отправлено уведомление #{alert_id} пользователю {user_id}")
+
+            await AlertRepository.delete(alert_id)
+            logger.info(f"🗑️ Уведомление #{alert_id} удалено после срабатывания")
+
         except Exception as e:
             logger.error(f"Ошибка отправки уведомления #{alert_id}: {e}")
 
