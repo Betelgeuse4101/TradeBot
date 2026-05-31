@@ -5,8 +5,35 @@ from logger import get_logger
 from config import Config
 import asyncio
 from functools import wraps
+from aiogram.fsm.context import FSMContext
 
 logger = get_logger('callback_utils')
+
+
+async def cleanup_and_answer(message: Message, state: FSMContext, text: str, reply_markup=None):
+    """
+    Удаляет предыдущее сообщение бота (с кнопками) и сообщение пользователя,
+    затем отправляет новое сообщение и сохраняет его ID.
+    """
+    data = await state.get_data()
+    last_msg_id = data.get("last_bot_msg_id")
+
+    if last_msg_id:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=last_msg_id)
+        except Exception:
+            pass
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    new_msg = await message.answer(text, reply_markup=reply_markup)
+
+    await state.update_data(last_bot_msg_id=new_msg.message_id)
+
+    return new_msg
 
 
 def auto_delete_message(delay: int = 3):

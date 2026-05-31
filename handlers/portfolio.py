@@ -10,7 +10,7 @@ from logger import get_logger, log_function_call
 from services.price_service import price_service
 from services.portfolio_service import portfolio_service
 from utils import format_money, format_percent
-from callback_utils import safe_callback_answer, safe_edit_message, auto_delete_message
+from callback_utils import safe_callback_answer, safe_edit_message, auto_delete_message, cleanup_and_answer
 from constants import SYSTEM_COMMANDS
 
 router = Router()
@@ -58,11 +58,12 @@ async def create_portfolio_start(message: Message, state: FSMContext):
     """Начало создания портфеля"""
     await state.set_state(PortfolioState.waiting_for_name)
 
-    await message.answer(
+    msg = await message.answer(
         "📝 <b>Создание нового портфеля</b>\n\n"
         "Введите название портфеля:",
         reply_markup=Keyboards.get_cancel_keyboard()
     )
+    await state.update_data(last_bot_msg_id=msg.message_id)
 
 
 @router.callback_query(F.data == "create_portfolio")
@@ -71,6 +72,7 @@ async def create_portfolio_callback(callback: CallbackQuery, state: FSMContext):
     """Начало создания портфеля (из callback)"""
     await safe_callback_answer(callback)
     await state.set_state(PortfolioState.waiting_for_name)
+    await state.update_data(last_bot_msg_id=callback.message.message_id)
 
     await safe_edit_message(
         callback,
@@ -81,7 +83,6 @@ async def create_portfolio_callback(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(PortfolioState.waiting_for_name)
-@auto_delete_message(delay=1)
 @log_function_call()
 async def process_portfolio_name(message: Message, state: FSMContext):
     """Обработка названия портфеля"""
@@ -117,17 +118,21 @@ async def process_portfolio_name(message: Message, state: FSMContext):
     name = message.text.strip()
 
     if len(name) < 3 or len(name) > 50:
-        await message.answer("❌ Название должно быть от 3 до 50 символов. Попробуйте еще раз:")
+        await cleanup_and_answer(message, state, "❌ Название должно быть от 3 до 50 символов. Попробуйте еще раз:",
+                                 reply_markup=Keyboards.get_cancel_keyboard())
         return
 
     if await PortfolioRepository.check_name_exists(message.from_user.id, name):
-        await message.answer("❌ У вас уже есть портфель с таким названием. Придумайте другое:")
+        await cleanup_and_answer(message, state, "❌ У вас уже есть портфель с таким названием. Придумайте другое:",
+                                 reply_markup=Keyboards.get_cancel_keyboard())
         return
 
     await state.update_data(name=name)
     await state.set_state(PortfolioState.waiting_for_description)
 
-    await message.answer(
+    await cleanup_and_answer(
+        message,
+        state,
         f"📝 Название: <b>{name}</b>\n\n"
         f"Теперь введите описание портфеля (или отправьте /skip чтобы пропустить):",
         reply_markup=Keyboards.get_skip_keyboard()
@@ -135,7 +140,6 @@ async def process_portfolio_name(message: Message, state: FSMContext):
 
 
 @router.message(PortfolioState.waiting_for_description)
-@auto_delete_message(delay=1)
 @log_function_call()
 async def process_portfolio_description(message: Message, state: FSMContext):
     """Обработка описания портфеля"""
@@ -171,7 +175,9 @@ async def process_portfolio_description(message: Message, state: FSMContext):
     else:
         description = message.text.strip()
         if len(description) > 500:
-            await message.answer("❌ Описание слишком длинное (макс. 500 символов). Попробуйте еще раз:")
+            await cleanup_and_answer(message, state,
+                                     "❌ Описание слишком длинное (макс. 500 символов). Попробуйте еще раз:",
+                                     reply_markup=Keyboards.get_skip_keyboard())
             return
 
     data = await state.get_data()
@@ -184,19 +190,23 @@ async def process_portfolio_description(message: Message, state: FSMContext):
         description=description
     )
 
-    await state.clear()
-
     if portfolio_id:
-        await message.answer(
+        await cleanup_and_answer(
+            message,
+            state,
             f"✅ <b>Портфель '{name}' создан!</b>\n\n"
             f"Теперь вы можете добавлять в него активы.",
             reply_markup=Keyboards.get_portfolio_actions(portfolio_id)
         )
     else:
-        await message.answer(
+        await cleanup_and_answer(
+            message,
+            state,
             "❌ Ошибка создания портфеля. Попробуйте позже.",
             reply_markup=Keyboards.get_main_menu()
         )
+
+    await state.clear()
 
 
 @router.callback_query(PortfolioState.waiting_for_description, F.data == "skip")
@@ -267,9 +277,10 @@ async def process_skip_edit_portfolio_description(callback: CallbackQuery, state
 
 @router.callback_query(F.data.startswith("portfolio_"))
 @log_function_call()
-async def show_portfolio_detail(callback: CallbackQuery):
+async def show_portfolio_detail(callback: CallbackQuery, state: FSMContext):
     """Показывает детали портфеля"""
     await safe_callback_answer(callback)
+    await state.clear()
 
     portfolio_id = int(callback.data.replace("portfolio_", ""))
     summary = await portfolio_service.calculate_portfolio_summary(portfolio_id)
@@ -431,7 +442,7 @@ async def edit_portfolio_name(callback: CallbackQuery, state: FSMContext):
         await safe_edit_message(callback, "❌ Портфель не найден")
         return
 
-    await state.update_data(portfolio_id=portfolio_id)
+    await state.update_data(portfolio_id=portfolio_id, last_bot_msg_id=callback.message.message_id)
     await state.set_state(PortfolioState.waiting_for_edit_name)
 
     await safe_edit_message(
@@ -444,7 +455,6 @@ async def edit_portfolio_name(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(PortfolioState.waiting_for_edit_name)
-@auto_delete_message(delay=1)
 @log_function_call()
 async def process_edit_portfolio_name(message: Message, state: FSMContext):
     """Обработка нового названия портфеля"""
@@ -469,11 +479,13 @@ async def process_edit_portfolio_name(message: Message, state: FSMContext):
     new_name = message.text.strip()
 
     if len(new_name) < 3 or len(new_name) > 50:
-        await message.answer("❌ Название должно быть от 3 до 50 символов. Попробуйте еще раз:")
+        await cleanup_and_answer(message, state, "❌ Название должно быть от 3 до 50 символов. Попробуйте еще раз:",
+                                 reply_markup=Keyboards.get_cancel_keyboard())
         return
 
     if await PortfolioRepository.check_name_exists(message.from_user.id, new_name):
-        await message.answer("❌ У вас уже есть портфель с таким названием. Придумайте другое:")
+        await cleanup_and_answer(message, state, "❌ У вас уже есть портфель с таким названием. Придумайте другое:",
+                                 reply_markup=Keyboards.get_cancel_keyboard())
         return
 
     data = await state.get_data()
@@ -481,18 +493,21 @@ async def process_edit_portfolio_name(message: Message, state: FSMContext):
 
     success = await PortfolioRepository.update_name(portfolio_id, new_name)
 
-    await state.clear()
-
     if success:
-        await message.answer(
+        await cleanup_and_answer(
+            message,
+            state,
             f"✅ Название портфеля изменено на '{new_name}'",
             reply_markup=Keyboards.get_back_button(f"portfolio_{portfolio_id}")
         )
     else:
-        await message.answer(
+        await cleanup_and_answer(
+            message,
+            state,
             "❌ Ошибка при изменении названия",
             reply_markup=Keyboards.get_back_button(f"portfolio_{portfolio_id}")
         )
+    await state.clear()
 
 
 @router.callback_query(F.data.startswith("edit_desc_"))
@@ -508,7 +523,7 @@ async def edit_portfolio_description(callback: CallbackQuery, state: FSMContext)
         await safe_edit_message(callback, "❌ Портфель не найден")
         return
 
-    await state.update_data(portfolio_id=portfolio_id)
+    await state.update_data(portfolio_id=portfolio_id, last_bot_msg_id=callback.message.message_id)
     await state.set_state(PortfolioState.waiting_for_edit_description)
 
     await safe_edit_message(
@@ -521,7 +536,6 @@ async def edit_portfolio_description(callback: CallbackQuery, state: FSMContext)
 
 
 @router.message(PortfolioState.waiting_for_edit_description)
-@auto_delete_message(delay=1)
 @log_function_call()
 async def process_edit_portfolio_description(message: Message, state: FSMContext):
     """Обработка нового описания портфеля"""
@@ -548,7 +562,9 @@ async def process_edit_portfolio_description(message: Message, state: FSMContext
     else:
         new_description = message.text.strip()
         if len(new_description) > 500:
-            await message.answer("❌ Описание слишком длинное (макс. 500 символов). Попробуйте еще раз:")
+            await cleanup_and_answer(message, state,
+                                     "❌ Описание слишком длинное (макс. 500 символов). Попробуйте еще раз:",
+                                     reply_markup=Keyboards.get_skip_keyboard())
             return
 
     data = await state.get_data()
@@ -556,18 +572,21 @@ async def process_edit_portfolio_description(message: Message, state: FSMContext
 
     success = await PortfolioRepository.update_description(portfolio_id, new_description)
 
-    await state.clear()
-
     if success:
-        await message.answer(
+        await cleanup_and_answer(
+            message,
+            state,
             f"✅ Описание портфеля обновлено",
             reply_markup=Keyboards.get_back_button(f"portfolio_{portfolio_id}")
         )
     else:
-        await message.answer(
+        await cleanup_and_answer(
+            message,
+            state,
             "❌ Ошибка при обновлении описания",
             reply_markup=Keyboards.get_back_button(f"portfolio_{portfolio_id}")
         )
+    await state.clear()
 
 
 @router.callback_query(F.data.startswith("delete_portfolio_"))

@@ -135,6 +135,7 @@ class Keyboards:
                 InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"delete_asset_{asset_id}"),
                 InlineKeyboardButton(text="🔄 Обновить цену", callback_data=f"refresh_asset_{asset_id}")
             ],
+            [InlineKeyboardButton(text="📋 К списку активов", callback_data=f"list_assets_{portfolio_id}")],
             [InlineKeyboardButton(text="↩️ К портфелю", callback_data=f"portfolio_{portfolio_id}")]
         ])
 
@@ -162,56 +163,51 @@ class Keyboards:
         ])
 
     @staticmethod
-    def get_alerts_list(alerts: List[Dict]):
-        """Список уведомлений"""
+    def get_alerts_list(alerts: List[Dict], offset: int = 0):
+        """Список уведомлений (с пагинацией)"""
         buttons = []
 
-        for alert in alerts[:10]:
+        # Берем только уведомления для текущей страницы
+        for alert in alerts[offset:offset + 10]:
             if alert['alert_type'] == 'portfolio':
                 name = alert.get('portfolio_name', 'Портфель')
-                if alert['condition_type'] == 'price':
-                    target_display = f"{float(alert['target_value']):,.2f} {alert.get('currency', 'RUB')}"
-                else:
-                    target_display = f"{float(alert['target_value']):+.1f}%"
-
-                direction = "↑" if alert['direction'] == 'up' else "↓"
-
-                if alert['is_triggered']:
-                    status = "✅"
-                elif alert['is_active']:
-                    status = "⏳"
-                else:
-                    status = "⏸️"
-
-                text = f"{status} {direction} {name}: {target_display}"
             else:
-                asset_name = alert.get('asset_symbol', 'Актив')
-                if alert['condition_type'] == 'price':
-                    target_display = f"{float(alert['target_value']):,.2f} {alert.get('currency', 'RUB')}"
-                else:
-                    target_display = f"{float(alert['target_value']):+.1f}%"
+                name = alert.get('asset_symbol', 'Актив')
 
-                direction = "↑" if alert['direction'] == 'up' else "↓"
+            if alert['condition_type'] == 'price':
+                target_display = f"{float(alert['target_value']):,.2f} {alert.get('currency', 'RUB')}"
+            else:
+                target_display = f"{float(alert['target_value']):+.1f}%"
 
-                if alert['is_triggered']:
-                    status = "✅"
-                elif alert['is_active']:
-                    status = "⏳"
-                else:
-                    status = "⏸️"
+            direction = "↑" if alert['direction'] == 'up' else "↓"
 
-                text = f"{status} {direction} {asset_name}: {target_display}"
+            if alert['is_triggered']:
+                status = "✅"
+            elif alert['is_active']:
+                status = "⏳"
+            else:
+                status = "⏸️"
 
             buttons.append([
                 InlineKeyboardButton(
-                    text=text,
+                    text=f"{status} {direction} {name}: {target_display}",
                     callback_data=f"view_alert_{alert['id']}"
                 )
             ])
 
+        nav_buttons = []
+        if offset > 0:
+            nav_buttons.append(
+                InlineKeyboardButton(text="⬅️ Назад", callback_data=f"more_alerts_{max(0, offset - 10)}"))
+        if len(alerts) > offset + 10:
+            nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"more_alerts_{offset + 10}"))
+
+        if nav_buttons:
+            buttons.append(nav_buttons)
+
         buttons.append([
             InlineKeyboardButton(text="➕ Новое уведомление", callback_data="new_alert"),
-            InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_main")
+            InlineKeyboardButton(text="↩️ Главное меню", callback_data="back_to_main")
         ])
 
         return InlineKeyboardMarkup(inline_keyboard=buttons)

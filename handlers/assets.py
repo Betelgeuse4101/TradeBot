@@ -11,7 +11,7 @@ from logger import get_logger, log_function_call
 from services.price_service import price_service
 from services.portfolio_service import portfolio_service
 from utils import parse_decimal, format_money, validate_positive_decimal, format_percent, format_quantity
-from callback_utils import safe_callback_answer, safe_edit_message, auto_delete_message
+from callback_utils import safe_callback_answer, safe_edit_message, auto_delete_message, cleanup_and_answer
 from constants import SYSTEM_COMMANDS
 
 router = Router()
@@ -45,7 +45,10 @@ async def add_asset_start(callback: CallbackQuery, state: FSMContext):
         )
         return
 
-    await state.update_data(portfolio_id=portfolio_id)
+    await state.update_data(
+        portfolio_id=portfolio_id,
+        last_bot_msg_id=callback.message.message_id
+    )
     await state.set_state(AssetState.waiting_for_symbol)
 
     await safe_edit_message(
@@ -53,26 +56,29 @@ async def add_asset_start(callback: CallbackQuery, state: FSMContext):
         f"➕ <b>Добавление актива в портфель '{portfolio['name']}'</b>\n\n"
         f"Введите ТИКЕР актива (например, SBER, GAZP, YDEX):\n\n"
         f"<i>Только латинские буквы, без поиска по названию</i>",
-        reply_markup=Keyboards.get_cancel_keyboard()
+        reply_markup=Keyboards.get_cancel_keyboard(callback_data=f"portfolio_{portfolio_id}")
     )
 
 
 @router.message(AssetState.waiting_for_symbol)
-@auto_delete_message(delay=1)
 @log_function_call()
 async def process_asset_symbol(message: Message, state: FSMContext):
     """Обработка символа актива"""
     symbol = message.text.strip().upper()
+    data = await state.get_data()
+    portfolio_id = data.get('portfolio_id')
 
     if not symbol or len(symbol) < 1 or len(symbol) > 20:
-        await message.answer("❌ Некорректный тикер. Введите правильный тикер (например, SBER):")
+        await cleanup_and_answer(message, state, "❌ Некорректный тикер. Введите правильный тикер (например, SBER):",
+                                 reply_markup=Keyboards.get_cancel_keyboard(callback_data=f"portfolio_{portfolio_id}"))
         return
 
     if not all(c.isalnum() or c in ['.', '-', '_'] for c in symbol):
-        await message.answer("❌ Тикер должен содержать только буквы, цифры и символы . - _")
+        await cleanup_and_answer(message, state, "❌ Тикер должен содержать только буквы, цифры и символы . - _",
+                                 reply_markup=Keyboards.get_cancel_keyboard(callback_data=f"portfolio_{portfolio_id}"))
         return
 
-    status_msg = await message.answer(f"⏳ Проверяем тикер {symbol} на MOEX...")
+    status_msg = await cleanup_and_answer(message, state, f"⏳ Проверяем тикер {symbol} на MOEX...")
 
     is_valid, info = await price_service.validate_symbol_with_info(symbol)
 
@@ -83,7 +89,7 @@ async def process_asset_symbol(message: Message, state: FSMContext):
             f"• SBER - Сбербанк\n"
             f"• GAZP - Газпром\n"
             f"• YDEX - Яндекс\n",
-            reply_markup=Keyboards.get_cancel_keyboard()
+            reply_markup=Keyboards.get_cancel_keyboard(callback_data=f"portfolio_{portfolio_id}")
         )
         return
 
@@ -110,23 +116,28 @@ async def process_asset_symbol(message: Message, state: FSMContext):
         f"{market_status}\n\n"
         f"💰 Текущая цена: <b>{price_text}</b>\n\n"
         f"🔢 Введите количество актива (например, 10 или 0.5):",
-        reply_markup=Keyboards.get_cancel_keyboard()
+        reply_markup=Keyboards.get_cancel_keyboard(callback_data=f"portfolio_{portfolio_id}")
     )
 
 
 @router.message(AssetState.waiting_for_quantity)
-@auto_delete_message(delay=1)
 @log_function_call()
 async def process_asset_quantity(message: Message, state: FSMContext):
     """Обработка количества актива"""
     quantity = parse_decimal(message.text)
+    data = await state.get_data()
+    portfolio_id = data.get('portfolio_id')
 
     if not validate_positive_decimal(quantity):
-        await message.answer("❌ Вы ввели отрицательное или слишком большое число (более 12 цифр).\nВведите корректное число")
+        await cleanup_and_answer(
+            message,
+            state,
+            "❌ Вы ввели отрицательное или слишком большое число (более 12 цифр).\nВведите корректное число:",
+            reply_markup=Keyboards.get_cancel_keyboard(callback_data=f"portfolio_{portfolio_id}")
+        )
         return
 
     await state.update_data(quantity=quantity)
-    data = await state.get_data()
     current_price = data.get('current_price')
 
     await state.set_state(AssetState.waiting_for_price_choice)
@@ -145,7 +156,7 @@ async def process_asset_quantity(message: Message, state: FSMContext):
             )
         ],
         [
-            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"portfolio_{portfolio_id}")
         ]
     ])
 
@@ -153,7 +164,9 @@ async def process_asset_quantity(message: Message, state: FSMContext):
 
     if current_price and current_price > 0:
         price_text = format_money(current_price, currency)
-        await message.answer(
+        await cleanup_and_answer(
+            message,
+            state,
             f"📝 <b>Выберите цену покупки для {data['symbol']}</b>\n\n"
             f"💰 Текущая рыночная цена: <b>{price_text}</b>\n\n"
             f"Выберите, какую цену использовать:",
@@ -168,10 +181,12 @@ async def process_asset_quantity(message: Message, state: FSMContext):
                 )
             ],
             [
-                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
+                InlineKeyboardButton(text="❌ Отмена", callback_data=f"portfolio_{portfolio_id}")
             ]
         ])
-        await message.answer(
+        await cleanup_and_answer(
+            message,
+            state,
             f"⚠️ <b>Текущая цена для {data['symbol']} недоступна</b>\n\n"
             f"Пожалуйста, введите цену покупки вручную:",
             reply_markup=keyboard
@@ -205,11 +220,14 @@ async def use_manual_price(callback: CallbackQuery, state: FSMContext):
     """Ввести свою цену"""
     await safe_callback_answer(callback)
     await state.set_state(AssetState.waiting_for_manual_price)
-    await state.update_data(price_choice='manual')
+
+    # Обновляем last_bot_msg_id для следующего шага
+    await state.update_data(price_choice='manual', last_bot_msg_id=callback.message.message_id)
 
     data = await state.get_data()
     currency = data.get('currency', 'RUB')
     current_price = data.get('current_price')
+    portfolio_id = data.get('portfolio_id')
 
     text = "✏️ <b>Введите цену покупки</b>\n\n"
     text += f"Валюта: {currency}\n\n"
@@ -222,26 +240,35 @@ async def use_manual_price(callback: CallbackQuery, state: FSMContext):
 
     await callback.message.edit_text(
         text,
-        reply_markup=Keyboards.get_cancel_keyboard()
+        reply_markup=Keyboards.get_cancel_keyboard(callback_data=f"portfolio_{portfolio_id}")
     )
 
 
 @router.message(AssetState.waiting_for_manual_price)
-@auto_delete_message(delay=1)
 @log_function_call()
 async def process_manual_price(message: Message, state: FSMContext):
     """Обработка ручного ввода цены"""
     purchase_price = parse_decimal(message.text)
+    data = await state.get_data()
+    portfolio_id = data.get('portfolio_id')
 
     if not validate_positive_decimal(purchase_price):
-        await message.answer(
+        await cleanup_and_answer(
+            message,
+            state,
             "❌ Введите положительное число (например, 150.50 или 2500):\n\n"
-            "Цена должна быть больше 0"
+            "Цена должна быть больше 0",
+            reply_markup=Keyboards.get_cancel_keyboard(callback_data=f"portfolio_{portfolio_id}")
         )
         return
 
     if purchase_price > Decimal('999999999999'):
-        await message.answer("❌ Слишком большая цена (максимум 999 999 999 999)")
+        await cleanup_and_answer(
+            message,
+            state,
+            "❌ Слишком большая цена (максимум 999 999 999 999)",
+            reply_markup=Keyboards.get_cancel_keyboard(callback_data=f"portfolio_{portfolio_id}")
+        )
         return
 
     await state.update_data(purchase_price=purchase_price)
@@ -258,8 +285,8 @@ async def show_confirmation(message: Message, state: FSMContext, callback: Callb
     currency = data.get('currency', 'RUB')
     total = quantity * purchase_price
 
-    data_state = await state.get_data()
-    price_choice = data_state.get('price_choice', 'manual')
+    price_choice = data.get('price_choice', 'manual')
+    portfolio_id = data.get('portfolio_id')
 
     profit_info = ""
     if price_choice == 'moex' and current_price and current_price > 0:
@@ -278,7 +305,7 @@ async def show_confirmation(message: Message, state: FSMContext, callback: Callb
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_add_asset")],
         [InlineKeyboardButton(text="↩️ Назад к выбору цены", callback_data="back_to_price_choice")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"portfolio_{portfolio_id}")]
     ])
 
     response = f"""
@@ -295,7 +322,7 @@ async def show_confirmation(message: Message, state: FSMContext, callback: Callb
     if callback:
         await callback.message.edit_text(response, reply_markup=keyboard)
     else:
-        await message.answer(response, reply_markup=keyboard)
+        await cleanup_and_answer(message, state, response, reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "back_to_price_choice")
@@ -308,6 +335,7 @@ async def back_to_price_choice(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     current_price = data.get('current_price')
     currency = data.get('currency', 'RUB')
+    portfolio_id = data.get('portfolio_id')
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -323,7 +351,7 @@ async def back_to_price_choice(callback: CallbackQuery, state: FSMContext):
             )
         ],
         [
-            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"portfolio_{portfolio_id}")
         ]
     ])
 
@@ -344,7 +372,7 @@ async def back_to_price_choice(callback: CallbackQuery, state: FSMContext):
                 )
             ],
             [
-                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
+                InlineKeyboardButton(text="❌ Отмена", callback_data=f"portfolio_{portfolio_id}")
             ]
         ])
         await callback.message.edit_text(
@@ -563,7 +591,7 @@ async def edit_asset_quantity(callback: CallbackQuery, state: FSMContext):
         await safe_edit_message(callback, "❌ Актив не найден")
         return
 
-    await state.update_data(asset_id=asset_id)
+    await state.update_data(asset_id=asset_id, last_bot_msg_id=callback.message.message_id)
     await state.set_state(AssetState.waiting_for_edit_quantity)
 
     await safe_edit_message(
@@ -572,31 +600,36 @@ async def edit_asset_quantity(callback: CallbackQuery, state: FSMContext):
         f"Актив: {asset['name']} ({asset['symbol']})\n"
         f"Текущее количество: {asset['quantity']}\n\n"
         f"Введите новое количество (положительное число):",
-        reply_markup=Keyboards.get_cancel_keyboard()
+        reply_markup=Keyboards.get_cancel_keyboard(callback_data=f"view_asset_{asset_id}")
     )
 
 
 @router.message(AssetState.waiting_for_edit_quantity)
-@auto_delete_message(delay=1)
 @log_function_call()
 async def process_edit_quantity(message: Message, state: FSMContext):
     """Обработка нового количества"""
     new_quantity = parse_decimal(message.text)
-
-    if not validate_positive_decimal(new_quantity):
-        await message.answer("❌ Введите положительное число:")
-        return
-
     data = await state.get_data()
     asset_id = data['asset_id']
 
-    await AssetRepository.update_quantity(asset_id, new_quantity)
-    await state.clear()
+    if not validate_positive_decimal(new_quantity):
+        await cleanup_and_answer(
+            message,
+            state,
+            "❌ Введите положительное число:",
+            reply_markup=Keyboards.get_cancel_keyboard(callback_data=f"view_asset_{asset_id}")
+        )
+        return
 
-    await message.answer(
+    await AssetRepository.update_quantity(asset_id, new_quantity)
+
+    await cleanup_and_answer(
+        message,
+        state,
         f"✅ Количество обновлено до {new_quantity}",
         reply_markup=Keyboards.get_back_button(f"view_asset_{asset_id}")
     )
+    await state.clear()
 
 
 @router.callback_query(F.data.startswith("delete_asset_"))

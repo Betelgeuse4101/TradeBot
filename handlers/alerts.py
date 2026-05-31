@@ -9,7 +9,7 @@ from keyboards import Keyboards
 from logger import get_logger, log_function_call
 from services.price_service import price_service
 from utils import parse_decimal, validate_positive_decimal, format_money
-from callback_utils import auto_delete_message, safe_callback_answer
+from callback_utils import auto_delete_message, safe_callback_answer, cleanup_and_answer
 
 router = Router()
 logger = get_logger('alerts')
@@ -52,6 +52,23 @@ async def show_alerts(message: Message):
     await message.answer(
         text,
         reply_markup=Keyboards.get_alerts_list(alerts)
+    )
+
+
+@router.callback_query(F.data.startswith("more_alerts_"))
+@log_function_call()
+async def paginate_alerts(callback: CallbackQuery):
+    """Пагинация при просмотре списка уведомлений"""
+    await callback.answer()
+
+    offset = int(callback.data.replace("more_alerts_", ""))
+    user_id = callback.from_user.id
+
+    alerts = await AlertRepository.get_user_alerts(user_id, active_only=False)
+
+    await callback.message.edit_text(
+        "🔔 <b>Ваши уведомления:</b>",
+        reply_markup=Keyboards.get_alerts_list(alerts, offset=offset)
     )
 
 
@@ -315,7 +332,8 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(
         condition_type=condition_type,
-        direction=direction
+        direction=direction,
+        last_bot_msg_id=callback.message.message_id
     )
     await state.set_state(AlertState.waiting_for_target_value)
 
@@ -362,15 +380,17 @@ async def select_alert_type(callback: CallbackQuery, state: FSMContext):
             else:
                 hint = f"Введите желаемую цену\n(текущая: {format_money(current_price, asset['currency'])}):"
 
+    # Динамически создаем правильную кнопку назад
+    back_callback = f"back_to_{data['alert_type']}_{target_id}"
+
     await callback.message.edit_text(
         f"🎯 <b>Установка цели</b>\n\n"
         f"{hint}",
-        reply_markup=Keyboards.get_cancel_keyboard()
+        reply_markup=Keyboards.get_cancel_keyboard(callback_data=back_callback)
     )
 
 
 @router.message(AlertState.waiting_for_target_value)
-@auto_delete_message(delay=1)
 @log_function_call()
 async def process_alert_target(message: Message, state: FSMContext):
     """Обработка целевого значения"""
@@ -384,38 +404,52 @@ async def process_alert_target(message: Message, state: FSMContext):
     direction = data['direction']
     user_id = message.from_user.id
 
+    target_id = data.get('portfolio_id') if data.get('alert_type') == 'portfolio' else data.get('asset_id')
+    back_callback = f"back_to_{data['alert_type']}_{target_id}"
+
     if condition_type == 'percent':
         target_value = parse_decimal(target_text)
 
         if target_value is None:
-            await message.answer(
+            await cleanup_and_answer(
+                message,
+                state,
                 "❌ Неверный формат процента.\n\n"
                 "Примеры правильного ввода:\n"
                 "• 10\n"
                 "• 5.5\n"
                 "• 5,5\n"
-                "• 10%"
+                "• 10%",
+                reply_markup=Keyboards.get_cancel_keyboard(callback_data=back_callback)
             )
             return
 
         if target_value < 0:
             target_value = abs(target_value)
-            await message.answer(
+            await cleanup_and_answer(
+                message,
+                state,
                 f"⚠️ Процент преобразован в положительное значение: {target_value}%\n"
                 f"Направление '{direction}' определяет логику срабатывания."
             )
 
         if target_value == 0:
-            await message.answer(
+            await cleanup_and_answer(
+                message,
+                state,
                 "❌ Процент не может быть равен 0.\n"
-                "Установите ненулевое значение."
+                "Установите ненулевое значение.",
+                reply_markup=Keyboards.get_cancel_keyboard(callback_data=back_callback)
             )
             return
 
         if target_value > 1000:
-            await message.answer(
+            await cleanup_and_answer(
+                message,
+                state,
                 f"❌ Слишком большой процент (макс. 1000%).\n"
-                f"Вы ввели: {target_value}%"
+                f"Вы ввели: {target_value}%",
+                reply_markup=Keyboards.get_cancel_keyboard(callback_data=back_callback)
             )
             return
     else:
@@ -423,13 +457,16 @@ async def process_alert_target(message: Message, state: FSMContext):
         logger.info(f"🎯 Распознанная цена цели: {target_value}")
 
         if not validate_positive_decimal(target_value):
-            await message.answer(
+            await cleanup_and_answer(
+                message,
+                state,
                 "❌ Некорректная цена.\n\n"
                 "Примеры правильного ввода:\n"
                 "• 100\n"
                 "• 1 500.50\n"
                 "• 2,500.75\n"
-                "• 1.000,00"
+                "• 1.000,00",
+                reply_markup=Keyboards.get_cancel_keyboard(callback_data=back_callback)
             )
             return
 
@@ -476,47 +513,59 @@ async def process_alert_target(message: Message, state: FSMContext):
     if current_value is not None:
         if condition_type == 'price':
             if direction == 'up' and target_value <= current_value:
-                await message.answer(
+                await cleanup_and_answer(
+                    message,
+                    state,
                     f"⚠️ <b>Ошибка в уведомлении!</b>\n\n"
                     f"📈 Направление: <b>ВЫШЕ</b>\n"
                     f"💰 Текущая цена: <b>{format_money(current_value, currency)}</b>\n"
                     f"🎯 Ваша цель: <b>{format_money(target_value, currency)}</b>\n\n"
                     f"❌ Цель должна быть <b>ВЫШЕ</b> текущей цены!\n"
-                    f"<i>Укажите цену больше {format_money(current_value, currency)}</i>"
+                    f"<i>Укажите цену больше {format_money(current_value, currency)}</i>",
+                    reply_markup=Keyboards.get_cancel_keyboard(callback_data=back_callback)
                 )
                 return
 
             if direction == 'down' and target_value >= current_value:
-                await message.answer(
+                await cleanup_and_answer(
+                    message,
+                    state,
                     f"⚠️ <b>Ошибка в уведомлении!</b>\n\n"
                     f"📉 Направление: <b>НИЖЕ</b>\n"
                     f"💰 Текущая цена: <b>{format_money(current_value, currency)}</b>\n"
                     f"🎯 Ваша цель: <b>{format_money(target_value, currency)}</b>\n\n"
                     f"❌ Цель должна быть <b>НИЖЕ</b> текущей цены!\n"
-                    f"<i>Укажите цену меньше {format_money(current_value, currency)}</i>"
+                    f"<i>Укажите цену меньше {format_money(current_value, currency)}</i>",
+                    reply_markup=Keyboards.get_cancel_keyboard(callback_data=back_callback)
                 )
                 return
 
         else:
             if direction == 'up' and current_value >= target_value:
-                await message.answer(
+                await cleanup_and_answer(
+                    message,
+                    state,
                     f"⚠️ <b>Ошибка в уведомлении!</b>\n\n"
                     f"📈 Направление: <b>ВЫШЕ</b>\n"
                     f"📊 Текущее изменение: <b>{float(current_value):+.2f}%</b>\n"
                     f"🎯 Ваша цель: <b>+{float(target_value):.1f}%</b>\n\n"
                     f"❌ Цель должна быть <b>ВЫШЕ</b> текущего изменения!\n"
-                    f"<i>Укажите процент больше {float(current_value):+.2f}%</i>"
+                    f"<i>Укажите процент больше {float(current_value):+.2f}%</i>",
+                    reply_markup=Keyboards.get_cancel_keyboard(callback_data=back_callback)
                 )
                 return
 
             if direction == 'down' and current_value <= -target_value:
-                await message.answer(
+                await cleanup_and_answer(
+                    message,
+                    state,
                     f"⚠️ <b>Ошибка в уведомлении!</b>\n\n"
                     f"📉 Направление: <b>НИЖЕ</b>\n"
                     f"📊 Текущее изменение: <b>{float(current_value):+.2f}%</b>\n"
                     f"🎯 Ваша цель: <b>-{float(target_value):.1f}%</b>\n\n"
                     f"❌ Цель должна быть <b>НИЖЕ</b> текущего изменения!\n"
-                    f"<i>Укажите процент больше по модулю</i>"
+                    f"<i>Укажите процент больше по модулю</i>",
+                    reply_markup=Keyboards.get_cancel_keyboard(callback_data=back_callback)
                 )
                 return
 
@@ -541,7 +590,9 @@ async def process_alert_target(message: Message, state: FSMContext):
             )
     except Exception as e:
         logger.error(f"Ошибка создания уведомления: {e}")
-        await message.answer(
+        await cleanup_and_answer(
+            message,
+            state,
             "❌ Ошибка создания уведомления. Попробуйте позже.",
             reply_markup=Keyboards.get_main_menu()
         )
@@ -561,14 +612,18 @@ async def process_alert_target(message: Message, state: FSMContext):
         else:
             target_display = format_money(target_value)
 
-        await message.answer(
+        await cleanup_and_answer(
+            message,
+            state,
             f"✅ <b>Уведомление #{alert_id} создано!</b>\n\n"
             f"🎯 Цель: {direction_text} {target_display}\n\n"
             f"Я уведомлю вас при достижении цели!",
             reply_markup=Keyboards.get_main_menu()
         )
     else:
-        await message.answer(
+        await cleanup_and_answer(
+            message,
+            state,
             "❌ Ошибка создания уведомления",
             reply_markup=Keyboards.get_main_menu()
         )
@@ -665,3 +720,26 @@ async def back_to_alerts(callback: CallbackQuery):
         "🔔 <b>Ваши уведомления:</b>",
         reply_markup=Keyboards.get_alerts_list(alerts)
     )
+
+
+@router.callback_query(F.data.startswith("back_to_portfolio_"))
+@log_function_call()
+async def back_to_portfolio_alert(callback: CallbackQuery, state: FSMContext):
+    """Возврат назад при настройке уведомления на портфель"""
+    portfolio_id = callback.data.replace("back_to_portfolio_", "")
+    new_callback = callback.model_copy(update={"data": f"alert_portfolio_{portfolio_id}"})
+    await create_portfolio_alert(new_callback, state)
+
+
+@router.callback_query(F.data.startswith("back_to_asset_"))
+@log_function_call()
+async def back_to_asset_alert(callback: CallbackQuery, state: FSMContext):
+    """Возврат назад при настройке уведомления на конкретный актив"""
+    asset_id = int(callback.data.replace("back_to_asset_", ""))
+    asset = await AssetRepository.get(asset_id)
+
+    if asset:
+        new_callback = callback.model_copy(update={"data": f"alert_choose_asset_{asset['portfolio_id']}"})
+        await alert_choose_asset(new_callback, state)
+    else:
+        await new_alert_start(callback, state)
