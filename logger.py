@@ -144,7 +144,7 @@ class CustomLogger:
         if self.logger.handlers:
             return
 
-        self.logger.setLevel(logging.DEBUG)
+        self.logger.setLevel(logging.ERROR)
 
         self._add_file_handler()
         self._add_console_handler()
@@ -158,7 +158,7 @@ class CustomLogger:
                 interval=1,
                 backupCount=30,
                 encoding='utf-8',
-                delay=False  # Важно: сразу открываем файл
+                delay=False
             )
 
             file_handler.setLevel(logging.DEBUG)

@@ -1,31 +1,32 @@
 import asyncio
 import signal
 import sys
+import socket
+import aiohttp
 from config import Config
 from database.db import db
 from handlers import common, portfolio, assets, alerts
 from logger import get_logger, setup_module_loggers
 from services.alert_service import AlertService
 from services.price_service import price_service
-from database.fsm_storage import AsyncpgStorage
+from database.fsm_storage import FSMStorage
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.base import DefaultKeyBuilder
 from aiohttp import ClientError
-import aiohttp
 from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
-import socket
+
 
 logger = get_logger('main')
 
 
-class CryptoBot:
+class TradeBot:
     """Главный класс бота"""
 
     def __init__(self):
-        self.storage = AsyncpgStorage()
+        self.storage = FSMStorage()
 
         self.storage.key_builder = DefaultKeyBuilder(with_bot_id=True, with_destiny=True)
 
@@ -69,7 +70,7 @@ class CryptoBot:
         self._alert_task = asyncio.create_task(self.alert_service.start())
         logger.info("✅ Сервис уведомлений запущен")
 
-        # Запуск фонового обновления цен
+        # Запуск фонового обновления цен 
         self._price_updater_task = asyncio.create_task(price_service.start_updater())
         logger.info("✅ Фоновое обновление цен запущено")
 
@@ -246,7 +247,7 @@ async def main():
     setup_module_loggers()
     logger.info("🚀 Запуск приложения...")
 
-    bot = CryptoBot()
+    bot = TradeBot()
     loop = asyncio.get_running_loop()
 
     def signal_handler():
@@ -282,7 +283,7 @@ async def main():
         logger.info("🏁 Приложение завершено")
 
 
-async def shutdown(bot: CryptoBot):
+async def shutdown(bot: TradeBot):
     """Функция для graceful shutdown на Windows"""
     logger.info("🛑 Завершение работы...")
     await bot.stop()

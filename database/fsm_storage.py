@@ -10,7 +10,7 @@ from logger import get_logger
 logger = get_logger('fsm_storage')
 
 
-class AsyncpgStorage(BaseStorage):
+class FSMStorage(BaseStorage):
     """
     Хранилище FSM состояний в PostgreSQL
     """
