@@ -144,7 +144,7 @@ class CustomLogger:
         if self.logger.handlers:
             return
 
-        self.logger.setLevel(logging.ERROR)
+        self.logger.setLevel(logging.DEBUG)
 
         self._add_file_handler()
         self._add_console_handler()

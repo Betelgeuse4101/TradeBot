@@ -29,28 +29,21 @@ async def show_alerts(message: Message):
     """Показывает список уведомлений"""
     user_id = message.from_user.id
 
-    alerts = await AlertRepository.get_user_alerts(user_id, active_only=False)
+    alerts = await AlertRepository.get_user_alerts(user_id)
 
     if not alerts:
         await message.answer(
-            "📭 <b>У вас нет уведомлений</b>\n\n"
-            "Создайте уведомление для портфеля или актива!",
+            "📭 <b>У вас нет активных уведомлений</b>\n\n"
+            "Создайте уведомление для портфеля или актива!\n\n"
+            "<i>Уведомления автоматически удаляются после срабатывания</i>",
             reply_markup=Keyboards.get_alerts_empty()
         )
         return
 
-    active_alerts = [a for a in alerts if a['is_active'] and not a['is_triggered']]
-    triggered_alerts = [a for a in alerts if a['is_triggered']]
-
-    text = "🔔 <b>Ваши уведомления</b>\n\n"
-
-    if active_alerts:
-        text += f"⏳ Активные: {len(active_alerts)}\n"
-    if triggered_alerts:
-        text += f"✅ Сработавшие: {len(triggered_alerts)}\n"
-
     await message.answer(
-        text,
+        f"🔔 <b>Ваши активные уведомления</b>\n\n"
+        f"Всего: {len(alerts)}\n"
+        f"<i>Уведомления автоматически удаляются после срабатывания</i>",
         reply_markup=Keyboards.get_alerts_list(alerts)
     )
 
@@ -64,7 +57,7 @@ async def paginate_alerts(callback: CallbackQuery):
     offset = int(callback.data.replace("more_alerts_", ""))
     user_id = callback.from_user.id
 
-    alerts = await AlertRepository.get_user_alerts(user_id, active_only=False)
+    alerts = await AlertRepository.get_user_alerts(user_id)
 
     await callback.message.edit_text(
         "🔔 <b>Ваши уведомления:</b>",
@@ -639,7 +632,7 @@ async def view_alert(callback: CallbackQuery):
     alert = await AlertRepository.get(alert_id)
 
     if not alert:
-        await callback.message.edit_text("❌ Уведомление не найдено")
+        await callback.message.edit_text("❌ Уведомление не найдено (возможно, уже сработало и было удалено)")
         return
 
     direction_icon = "📈" if alert['direction'] == 'up' else "📉"
@@ -652,38 +645,39 @@ async def view_alert(callback: CallbackQuery):
         target_display = f"{float(alert['target_value']):+.1f}%"
         current_display = f"{float(alert['current_value']):+.1f}%" if alert['current_value'] else "нет данных"
 
-    status = "✅ Сработало" if alert['is_triggered'] else "⏳ Активно" if alert['is_active'] else "⏸️ Неактивно"
     created = alert['created_at'].strftime('%d.%m.%Y %H:%M') if alert['created_at'] else "неизвестно"
 
     if alert['alert_type'] == 'portfolio':
         target_name = alert.get('portfolio_name', f"Портфель ID:{alert['portfolio_id']}")
         text = f"""
-🔔 <b>Уведомление #{alert['id']}</b>
+🔔 <b>Активное уведомление #{alert['id']}</b>
 
 📊 Объект: <b>{target_name}</b>
 {direction_icon} Условие: {direction_text} {target_display}
-💰 Текущее: {current_display}
+💰 Текущее значение: {current_display}
 
-📊 Статус: {status}
 📅 Создано: {created}
+
+<i>Уведомление будет удалено после срабатывания</i>
         """
     else:
         target_name = alert.get('asset_name', alert.get('asset_symbol', f"Актив ID:{alert['asset_id']}"))
         symbol = alert.get('asset_symbol', '')
         text = f"""
-🔔 <b>Уведомление #{alert['id']}</b>
+🔔 <b>Активное уведомление #{alert['id']}</b>
 
 💎 Актив: <b>{target_name}</b> ({symbol})
 {direction_icon} Условие: {direction_text} {target_display}
-💰 Текущее: {current_display}
+💰 Текущее значение: {current_display}
 
-📊 Статус: {status}
 📅 Создано: {created}
+
+<i>Уведомление будет удалено после срабатывания</i>
         """
 
     await callback.message.edit_text(
         text,
-        reply_markup=Keyboards.get_alert_actions(alert_id, is_triggered=alert['is_triggered'])
+        reply_markup=Keyboards.get_alert_actions(alert_id)
     )
 
 
@@ -714,7 +708,7 @@ async def back_to_alerts(callback: CallbackQuery):
     await callback.answer()
 
     user_id = callback.from_user.id
-    alerts = await AlertRepository.get_user_alerts(user_id, active_only=False)
+    alerts = await AlertRepository.get_user_alerts(user_id)
 
     await callback.message.edit_text(
         "🔔 <b>Ваши уведомления:</b>",

@@ -120,10 +120,7 @@ class Database:
                 direction TEXT NOT NULL,
                 target_value DECIMAL(20, 8) NOT NULL,
                 current_value DECIMAL(20, 8),
-                is_active BOOLEAN DEFAULT TRUE,
-                is_triggered BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                triggered_at TIMESTAMP,
                 CHECK (
                     (alert_type = 'portfolio' AND portfolio_id IS NOT NULL AND asset_id IS NULL) OR
                     (alert_type = 'asset' AND asset_id IS NOT NULL AND portfolio_id IS NULL)
@@ -133,18 +130,23 @@ class Database:
             """
             CREATE TABLE IF NOT EXISTS price_history (
                 id SERIAL PRIMARY KEY,
-                symbol TEXT NOT NULL UNIQUE,
+                symbol TEXT NOT NULL,
                 price DECIMAL(20, 8) NOT NULL,
                 currency TEXT DEFAULT 'RUB',
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol)
             )
             """,
             """
             CREATE TABLE IF NOT EXISTS fsm_states (
-                key TEXT PRIMARY KEY,
+                id SERIAL PRIMARY KEY,
+                key TEXT UNIQUE NOT NULL,
+                user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 state TEXT,
                 data JSONB,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
             """
@@ -152,11 +154,12 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_assets_symbol ON assets(symbol);
             CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(asset_type);
             CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
-            CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(is_active) WHERE is_active = true;
-            CREATE INDEX IF NOT EXISTS idx_alerts_triggered ON alerts(is_triggered) WHERE is_triggered = false;
             CREATE INDEX IF NOT EXISTS idx_price_history_symbol ON price_history(symbol);
-            CREATE INDEX IF NOT EXISTS idx_fsm_updated_at ON fsm_states(updated_at);
-            CREATE INDEX IF NOT EXISTS idx_fsm_state ON fsm_states(state) WHERE state IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_price_history_updated ON price_history(updated_at);
+            CREATE INDEX IF NOT EXISTS idx_fsm_states_user ON fsm_states(user_id);
+            CREATE INDEX IF NOT EXISTS idx_fsm_states_key ON fsm_states(key);
+            CREATE INDEX IF NOT EXISTS idx_fsm_states_updated ON fsm_states(updated_at);
+            CREATE INDEX IF NOT EXISTS idx_fsm_states_state ON fsm_states(state) WHERE state IS NOT NULL;
             """
         ]
 

@@ -5,6 +5,7 @@ from aiogram.fsm.storage.base import BaseStorage, StorageKey
 from aiogram.fsm.state import State
 
 from database.db import db
+from database.repositories import FSMStorageRepository
 from logger import get_logger
 
 logger = get_logger('fsm_storage')
@@ -12,28 +13,30 @@ logger = get_logger('fsm_storage')
 
 class FSMStorage(BaseStorage):
     """
-    Хранилище FSM состояний в PostgreSQL
+    Хранилище FSM состояний в PostgreSQL с привязкой к пользователю
     """
 
     def __init__(self):
         self._closed = False
 
     async def set_state(self, key: StorageKey, state: Optional[State] = None) -> None:
-        """Установка состояния"""
+        """Установка состояния с привязкой к пользователю"""
         if self._closed:
             raise RuntimeError("Storage is closed")
 
         state_value = state.state if state is not None else None
 
         try:
-            await db.execute("""
-                INSERT INTO fsm_states (key, state, updated_at)
-                VALUES ($1, $2, CURRENT_TIMESTAMP)
-                ON CONFLICT (key) DO UPDATE SET
-                    state = EXCLUDED.state,
-                    updated_at = CURRENT_TIMESTAMP
-            """, self._key_to_str(key), state_value)
+            # Получаем текущие данные, чтобы не потерять их
+            current = await FSMStorageRepository.get_state(self._key_to_str(key))
+            current_data = current.get('data') if current else None
 
+            await FSMStorageRepository.save_state(
+                key=self._key_to_str(key),
+                user_id=key.user_id,
+                state=state_value,
+                data=current_data
+            )
             logger.debug(f"FSM: set_state key={key} state={state_value}")
 
         except Exception as e:
@@ -46,11 +49,8 @@ class FSMStorage(BaseStorage):
             raise RuntimeError("Storage is closed")
 
         try:
-            row = await db.fetchrow("""
-                SELECT state FROM fsm_states WHERE key = $1
-            """, self._key_to_str(key))
-
-            state_value = row['state'] if row else None
+            result = await FSMStorageRepository.get_state(self._key_to_str(key))
+            state_value = result['state'] if result else None
             logger.debug(f"FSM: get_state key={key} state={state_value}")
             return state_value
 
@@ -64,16 +64,16 @@ class FSMStorage(BaseStorage):
             raise RuntimeError("Storage is closed")
 
         try:
-            json_data = json.dumps(data, default=self._json_serializer)
+            # Получаем текущее состояние, чтобы не потерять его
+            current = await FSMStorageRepository.get_state(self._key_to_str(key))
+            current_state = current['state'] if current else None
 
-            await db.execute("""
-                INSERT INTO fsm_states (key, data, updated_at)
-                VALUES ($1, $2, CURRENT_TIMESTAMP)
-                ON CONFLICT (key) DO UPDATE SET
-                    data = EXCLUDED.data,
-                    updated_at = CURRENT_TIMESTAMP
-            """, self._key_to_str(key), json_data)
-
+            await FSMStorageRepository.save_state(
+                key=self._key_to_str(key),
+                user_id=key.user_id,
+                state=current_state,
+                data=data
+            )
             logger.debug(f"FSM: set_data key={key} data={data}")
 
         except Exception as e:
@@ -86,12 +86,9 @@ class FSMStorage(BaseStorage):
             raise RuntimeError("Storage is closed")
 
         try:
-            row = await db.fetchrow("""
-                SELECT data FROM fsm_states WHERE key = $1
-            """, self._key_to_str(key))
-
-            if row and row['data']:
-                return json.loads(row['data'])
+            result = await FSMStorageRepository.get_state(self._key_to_str(key))
+            if result and 'data' in result:
+                return result['data']
             return {}
 
         except Exception as e:
@@ -106,22 +103,11 @@ class FSMStorage(BaseStorage):
 
     async def cleanup_old_states(self, max_age_hours: int = 24) -> int:
         """Очистка старых состояний"""
-        try:
-            result = await db.execute("""
-                DELETE FROM fsm_states 
-                WHERE updated_at < NOW() - INTERVAL '1 hour' * $1
-            """, max_age_hours)
+        return await FSMStorageRepository.cleanup_old_states(max_age_hours)
 
-            deleted = int(result.split()[1]) if result.startswith('DELETE') else 0
-
-            if deleted > 0:
-                logger.info(f"Очищено {deleted} устаревших FSM состояний")
-
-            return deleted
-
-        except Exception as e:
-            logger.error(f"Ошибка при очистке FSM состояний: {e}")
-            return 0
+    async def get_user_states(self, user_id: int) -> list:
+        """Получение всех состояний пользователя"""
+        return await FSMStorageRepository.get_user_states(user_id)
 
     @staticmethod
     def _key_to_str(key: StorageKey) -> str:
@@ -135,16 +121,3 @@ class FSMStorage(BaseStorage):
             parts.append(str(key.thread_id))
 
         return ":".join(parts)
-
-    @staticmethod
-    def _json_serializer(obj: Any) -> Any:
-        """Сериализатор для JSON"""
-        from decimal import Decimal
-
-        if isinstance(obj, Decimal):
-            return float(obj) if obj.is_finite() else str(obj)
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        if hasattr(obj, '__dict__'):
-            return obj.__dict__
-        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")

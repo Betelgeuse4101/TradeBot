@@ -181,12 +181,7 @@ class Keyboards:
 
             direction = "↑" if alert['direction'] == 'up' else "↓"
 
-            if alert['is_triggered']:
-                status = "✅"
-            elif alert['is_active']:
-                status = "⏳"
-            else:
-                status = "⏸️"
+            status = "⏳ Активно"
 
             buttons.append([
                 InlineKeyboardButton(

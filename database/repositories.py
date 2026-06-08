@@ -228,21 +228,20 @@ class AssetRepository:
 
 
 class AlertRepository:
-    """Репозиторий для работы с уведомлениями"""
+    """Репозиторий для работы с уведомлениями (только активные уведомления)"""
 
     @staticmethod
     async def create_portfolio_alert(user_id: int, portfolio_id: int,
                                      condition_type: str, direction: str,
                                      target_value: Decimal) -> Optional[int]:
         """Создание уведомления для портфеля"""
-
         if target_value <= 0:
             raise ValueError("Целевое значение должно быть положительным")
 
         query = """
         INSERT INTO alerts (user_id, portfolio_id, alert_type, condition_type, 
-                           direction, target_value, is_active)
-        VALUES ($1, $2, 'portfolio', $3, $4, $5, true)
+                           direction, target_value)
+        VALUES ($1, $2, 'portfolio', $3, $4, $5)
         RETURNING id
         """
         try:
@@ -259,14 +258,13 @@ class AlertRepository:
                                  condition_type: str, direction: str,
                                  target_value: Decimal) -> Optional[int]:
         """Создание уведомления для актива"""
-
         if target_value <= 0:
             raise ValueError("Целевое значение должно быть положительным")
 
         query = """
         INSERT INTO alerts (user_id, asset_id, alert_type, condition_type, 
-                           direction, target_value, is_active)
-        VALUES ($1, $2, 'asset', $3, $4, $5, true)
+                           direction, target_value)
+        VALUES ($1, $2, 'asset', $3, $4, $5)
         RETURNING id
         """
         try:
@@ -279,8 +277,8 @@ class AlertRepository:
             return None
 
     @staticmethod
-    async def get_user_alerts(user_id: int, active_only: bool = True) -> List[Dict]:
-        """Получение уведомлений пользователя"""
+    async def get_user_alerts(user_id: int) -> List[Dict]:
+        """Получение всех уведомлений пользователя"""
         query = """
         SELECT a.*, 
                p.name as portfolio_name,
@@ -292,17 +290,14 @@ class AlertRepository:
         LEFT JOIN portfolios p ON a.portfolio_id = p.id
         LEFT JOIN assets ast ON a.asset_id = ast.id
         WHERE a.user_id = $1
+        ORDER BY a.created_at DESC
         """
-        if active_only:
-            query += " AND a.is_active = true"
-        query += " ORDER BY a.created_at DESC"
-
         rows = await db.fetch(query, user_id)
         return [dict(row) for row in rows]
 
     @staticmethod
     async def get_active_alerts() -> List[Dict]:
-        """Получение всех активных уведомлений для проверки"""
+        """Получение всех уведомлений для проверки (все записи активны)"""
         query = """
         SELECT a.*, 
                p.user_id as portfolio_user_id,
@@ -314,7 +309,6 @@ class AlertRepository:
         FROM alerts a
         LEFT JOIN portfolios p ON a.portfolio_id = p.id
         LEFT JOIN assets ast ON a.asset_id = ast.id
-        WHERE a.is_active = true AND a.is_triggered = false
         """
         rows = await db.fetch(query)
         return [dict(row) for row in rows]
@@ -342,40 +336,96 @@ class AlertRepository:
         await db.execute(query, current_value, alert_id)
 
     @staticmethod
-    async def mark_triggered(alert_id: int):
-        """Отметить уведомление как сработавшее"""
-        query = """
-        UPDATE alerts 
-        SET is_triggered = true, triggered_at = CURRENT_TIMESTAMP 
-        WHERE id = $1
-        """
-        await db.execute(query, alert_id)
-
-    @staticmethod
-    async def deactivate(alert_id: int):
-        """Деактивировать уведомление"""
-        query = "UPDATE alerts SET is_active = false WHERE id = $1"
-        await db.execute(query, alert_id)
-
-    @staticmethod
     async def delete(alert_id: int) -> bool:
-        """Удаление уведомления"""
+        """Удаление уведомления (полностью, без флагов)"""
         query = "DELETE FROM alerts WHERE id = $1"
         try:
             await db.execute(query, alert_id)
-            logger.info(f"Уведомление {alert_id} удалено")
+            logger.info(f"🗑️ Уведомление {alert_id} удалено")
             return True
         except Exception as e:
             logger.error(f"Ошибка удаления уведомления {alert_id}: {e}")
             return False
 
+    @staticmethod
+    async def delete_user_alerts(user_id: int) -> int:
+        """Удаление всех уведомлений пользователя"""
+        query = "DELETE FROM alerts WHERE user_id = $1 RETURNING id"
+        try:
+            rows = await db.fetch(query, user_id)
+            deleted = len(rows)
+            logger.info(f"🗑️ Удалено {deleted} уведомлений пользователя {user_id}")
+            return deleted
+        except Exception as e:
+            logger.error(f"Ошибка удаления уведомлений пользователя {user_id}: {e}")
+            return 0
+
+    @staticmethod
+    async def delete_portfolio_alerts(portfolio_id: int) -> int:
+        """Удаление всех уведомлений портфеля"""
+        query = "DELETE FROM alerts WHERE portfolio_id = $1 RETURNING id"
+        try:
+            rows = await db.fetch(query, portfolio_id)
+            deleted = len(rows)
+            logger.info(f"🗑️ Удалено {deleted} уведомлений портфеля {portfolio_id}")
+            return deleted
+        except Exception as e:
+            logger.error(f"Ошибка удаления уведомлений портфеля {portfolio_id}: {e}")
+            return 0
+
+    @staticmethod
+    async def delete_asset_alerts(asset_id: int) -> int:
+        """Удаление всех уведомлений актива"""
+        query = "DELETE FROM alerts WHERE asset_id = $1 RETURNING id"
+        try:
+            rows = await db.fetch(query, asset_id)
+            deleted = len(rows)
+            logger.info(f"🗑️ Удалено {deleted} уведомлений актива {asset_id}")
+            return deleted
+        except Exception as e:
+            logger.error(f"Ошибка удаления уведомлений актива {asset_id}: {e}")
+            return 0
+
+    @staticmethod
+    async def get_alerts_by_portfolio(portfolio_id: int) -> List[Dict]:
+        """Получение всех уведомлений для портфеля"""
+        query = """
+        SELECT a.*, 
+               ast.symbol as asset_symbol,
+               ast.name as asset_name
+        FROM alerts a
+        LEFT JOIN assets ast ON a.asset_id = ast.id
+        WHERE a.portfolio_id = $1
+        ORDER BY a.created_at DESC
+        """
+        rows = await db.fetch(query, portfolio_id)
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    async def get_alerts_by_asset(asset_id: int) -> List[Dict]:
+        """Получение всех уведомлений для актива"""
+        query = """
+        SELECT * FROM alerts 
+        WHERE asset_id = $1
+        ORDER BY created_at DESC
+        """
+        rows = await db.fetch(query, asset_id)
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    async def count_user_alerts(user_id: int) -> int:
+        """Подсчет количества уведомлений пользователя"""
+        query = "SELECT COUNT(*) FROM alerts WHERE user_id = $1"
+        count = await db.fetchval(query, user_id)
+        return count or 0
+
 
 class PriceHistoryRepository:
-    """Репозиторий для хранения цен"""
+    """Репозиторий для кэширования цен MOEX по символам (тикерам)"""
 
     @staticmethod
     async def update_price(symbol: str, price: Decimal, currency: str = 'RUB'):
-        """Обновление цены символа"""
+        """Обновление или создание кэша цены для символа"""
         query = """
         INSERT INTO price_history (symbol, price, currency, updated_at)
         VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
@@ -383,18 +433,263 @@ class PriceHistoryRepository:
             price = EXCLUDED.price,
             currency = EXCLUDED.currency,
             updated_at = CURRENT_TIMESTAMP
+        RETURNING id
         """
-        await db.execute(query, symbol.upper(), price, currency)
+        try:
+            result = await db.fetchval(query, symbol.upper(), price, currency)
+            logger.debug(f"💰 Кэш цены для {symbol} обновлен: {price} {currency}")
+            return result
+        except Exception as e:
+            logger.error(f"Ошибка обновления кэша для {symbol}: {e}")
+            return None
 
     @staticmethod
     async def get_price(symbol: str) -> Optional[Dict]:
-        """Получение последней цены"""
-        query = "SELECT * FROM price_history WHERE symbol = $1"
+        """Получение кэшированной цены для символа"""
+        query = "SELECT symbol, price, currency, updated_at FROM price_history WHERE symbol = $1"
         row = await db.fetchrow(query, symbol.upper())
         return dict(row) if row else None
 
     @staticmethod
     async def get_all_prices() -> List[Dict]:
-        """Получение всех цен"""
-        rows = await db.fetch("SELECT * FROM price_history")
+        """Получение всех кэшированных цен"""
+        rows = await db.fetch("SELECT symbol, price, currency, updated_at FROM price_history ORDER BY symbol")
         return [dict(row) for row in rows]
+
+    @staticmethod
+    async def get_multiple_prices(symbols: List[str]) -> Dict[str, Dict]:
+        """Получение цен для нескольких символов за один запрос"""
+        if not symbols:
+            return {}
+
+        placeholders = ','.join(f'${i + 1}' for i in range(len(symbols)))
+        query = f"""
+        SELECT symbol, price, currency, updated_at
+        FROM price_history 
+        WHERE symbol IN ({placeholders})
+        """
+        rows = await db.fetch(query, *[s.upper() for s in symbols])
+        return {row['symbol']: dict(row) for row in rows}
+
+    @staticmethod
+    async def delete_price(symbol: str) -> bool:
+        """Удаление кэша цены для символа"""
+        query = "DELETE FROM price_history WHERE symbol = $1"
+        try:
+            await db.execute(query, symbol.upper())
+            logger.debug(f"🗑️ Кэш цены для {symbol} удален")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка удаления кэша для {symbol}: {e}")
+            return False
+
+    @staticmethod
+    async def get_price_age(symbol: str) -> Optional[float]:
+        """Получение возраста кэша в минутах"""
+        query = """
+        SELECT EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - updated_at))/60 as age_minutes
+        FROM price_history 
+        WHERE symbol = $1
+        """
+        age = await db.fetchval(query, symbol.upper())
+        return float(age) if age is not None else None
+
+    @staticmethod
+    async def is_cache_fresh(symbol: str, max_age_minutes: int = 15) -> bool:
+        """Проверка, является ли кэш свежим"""
+        age = await PriceHistoryRepository.get_price_age(symbol)
+        if age is None:
+            return False
+        return age < max_age_minutes
+
+
+class FSMStorageRepository:
+    """Репозиторий для работы с FSM состояниями"""
+
+    @staticmethod
+    async def save_state(key: str, user_id: int, state: Optional[str] = None, data: Optional[Dict] = None) -> Optional[
+        int]:
+        """Сохранение FSM состояния с привязкой к пользователю"""
+        import json
+        from decimal import Decimal
+        from datetime import datetime
+
+        def json_serializer(obj):
+            if isinstance(obj, Decimal):
+                return float(obj) if obj.is_finite() else str(obj)
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+        json_data = json.dumps(data, default=json_serializer) if data else None
+
+        query = """
+        INSERT INTO fsm_states (key, user_id, state, data, updated_at)
+        VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+        ON CONFLICT (key) DO UPDATE SET
+            user_id = EXCLUDED.user_id,
+            state = EXCLUDED.state,
+            data = EXCLUDED.data,
+            updated_at = CURRENT_TIMESTAMP
+        RETURNING id
+        """
+        try:
+            state_id = await db.fetchval(query, key, user_id, state, json_data)
+            logger.debug(f"FSM: состояние сохранено для key={key}, user_id={user_id}, id={state_id}")
+            return state_id
+        except Exception as e:
+            logger.error(f"Ошибка сохранения FSM состояния: {e}")
+            return None
+
+    @staticmethod
+    async def get_state(key: str) -> Optional[Dict]:
+        """Получение FSM состояния по ключу"""
+        import json
+
+        query = "SELECT id, key, user_id, state, data, updated_at, created_at FROM fsm_states WHERE key = $1"
+        row = await db.fetchrow(query, key)
+
+        if not row:
+            return None
+
+        result = {
+            'id': row['id'],
+            'key': row['key'],
+            'user_id': row['user_id'],
+            'state': row['state'],
+            'updated_at': row['updated_at'],
+            'created_at': row['created_at']
+        }
+
+        if row['data']:
+            result['data'] = json.loads(row['data'])
+
+        return result
+
+    @staticmethod
+    async def get_state_by_id(state_id: int) -> Optional[Dict]:
+        """Получение FSM состояния по ID"""
+        import json
+
+        query = "SELECT id, key, user_id, state, data, updated_at, created_at FROM fsm_states WHERE id = $1"
+        row = await db.fetchrow(query, state_id)
+
+        if not row:
+            return None
+
+        result = {
+            'id': row['id'],
+            'key': row['key'],
+            'user_id': row['user_id'],
+            'state': row['state'],
+            'updated_at': row['updated_at'],
+            'created_at': row['created_at']
+        }
+
+        if row['data']:
+            result['data'] = json.loads(row['data'])
+
+        return result
+
+    @staticmethod
+    async def delete_state(key: str) -> bool:
+        """Удаление FSM состояния по ключу"""
+        query = "DELETE FROM fsm_states WHERE key = $1"
+        try:
+            result = await db.execute(query, key)
+            deleted = result.startswith('DELETE')
+            if deleted:
+                logger.debug(f"FSM: состояние с key={key} удалено")
+            return deleted
+        except Exception as e:
+            logger.error(f"Ошибка удаления FSM состояния: {e}")
+            return False
+
+    @staticmethod
+    async def delete_state_by_id(state_id: int) -> bool:
+        """Удаление FSM состояния по ID"""
+        query = "DELETE FROM fsm_states WHERE id = $1"
+        try:
+            result = await db.execute(query, state_id)
+            deleted = result.startswith('DELETE')
+            if deleted:
+                logger.debug(f"FSM: состояние с id={state_id} удалено")
+            return deleted
+        except Exception as e:
+            logger.error(f"Ошибка удаления FSM состояния: {e}")
+            return False
+
+    @staticmethod
+    async def cleanup_old_states(max_age_hours: int = 24) -> int:
+        """Очистка старых FSM состояний"""
+        query = """
+        DELETE FROM fsm_states 
+        WHERE updated_at < NOW() - INTERVAL '1 hour' * $1
+        RETURNING id
+        """
+        try:
+            rows = await db.fetch(query, max_age_hours)
+            deleted = len(rows)
+            if deleted > 0:
+                logger.info(f"🧹 Очищено {deleted} устаревших FSM состояний (старше {max_age_hours} часов)")
+            return deleted
+        except Exception as e:
+            logger.error(f"Ошибка очистки FSM состояний: {e}")
+            return 0
+
+    @staticmethod
+    async def get_user_states(user_id: int) -> List[Dict]:
+        """Получение всех FSM состояний пользователя"""
+        import json
+
+        query = """
+        SELECT id, key, state, data, updated_at, created_at 
+        FROM fsm_states 
+        WHERE user_id = $1 
+        ORDER BY updated_at DESC
+        """
+        rows = await db.fetch(query, user_id)
+
+        result = []
+        for row in rows:
+            state_data = {
+                'id': row['id'],
+                'key': row['key'],
+                'state': row['state'],
+                'updated_at': row['updated_at'],
+                'created_at': row['created_at']
+            }
+            if row['data']:
+                state_data['data'] = json.loads(row['data'])
+            result.append(state_data)
+
+        return result
+
+    @staticmethod
+    async def update_state_data(key: str, data: Dict[str, Any]) -> bool:
+        """Обновление только данных FSM состояния"""
+        import json
+        from decimal import Decimal
+        from datetime import datetime
+
+        def json_serializer(obj):
+            if isinstance(obj, Decimal):
+                return float(obj) if obj.is_finite() else str(obj)
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+        json_data = json.dumps(data, default=json_serializer)
+
+        query = """
+        UPDATE fsm_states 
+        SET data = $1, updated_at = CURRENT_TIMESTAMP 
+        WHERE key = $2
+        """
+        try:
+            await db.execute(query, json_data, key)
+            logger.debug(f"FSM: обновлены данные для key={key}")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка обновления данных FSM: {e}")
+            return False
