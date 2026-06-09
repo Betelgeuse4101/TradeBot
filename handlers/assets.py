@@ -560,7 +560,6 @@ async def edit_asset(callback: CallbackQuery):
         return
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 Изменить количество", callback_data=f"edit_asset_quantity_{asset_id}")],
         [InlineKeyboardButton(text="💰 Обновить цену", callback_data=f"refresh_asset_{asset_id}")],
         [InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"delete_asset_{asset_id}")],
         [InlineKeyboardButton(text="↩️ Назад", callback_data=f"view_asset_{asset_id}")]
