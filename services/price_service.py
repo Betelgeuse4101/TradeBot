@@ -13,7 +13,7 @@ logger = get_logger('price_service')
 
 
 class PriceService:
-    """Сервис для фонового обновления и отдачи цен из кэша (БД)"""
+    """Сервис для фонового обновления и отдачи цен из кэша"""
 
     def __init__(self):
         self._closed = False
@@ -45,7 +45,7 @@ class PriceService:
         return True
 
     def _was_market_closed_recently(self) -> bool:
-        """Проверяет, не закрылся ли рынок недавно (в течение последних 30 минут)"""
+        """Проверяет, не закрылся ли рынок недавно"""
         if self._is_market_open():
             return False
 
@@ -85,7 +85,6 @@ class PriceService:
         if not last_update:
             return False
 
-        # Приводим last_update к осведомлённому времени (Москва)
         if last_update.tzinfo is None:
             msk_tz = pytz.timezone('Europe/Moscow')
             last_update = msk_tz.localize(last_update)

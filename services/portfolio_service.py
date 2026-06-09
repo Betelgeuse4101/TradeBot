@@ -13,7 +13,7 @@ class PortfolioService:
     """Сервис для расчета статистики портфеля на основе БД (без внешних запросов)"""
 
     async def calculate_portfolio_summary(self, portfolio_id: int) -> Dict[str, Any]:
-        """Мгновенный расчет портфеля со всей статистикой из локальной БД"""
+        """Мгновенный расчет портфеля со всей статистикой из БД"""
         from services.price_service import price_service
 
         portfolio = await PortfolioRepository.get(portfolio_id)
@@ -47,14 +47,12 @@ class PortfolioService:
 
         for asset in assets:
             quantity = asset['quantity']
-            purchase_price = asset['purchase_price']  # Пользовательская цена покупки
+            purchase_price = asset['purchase_price']
 
-            # ВАЖНО: Получаем ТЕКУЩУЮ РЫНОЧНУЮ цену, а не сохраненную
             current_price = await price_service.get_price(asset['symbol'])
             if not current_price:
                 current_price = asset['current_price'] or purchase_price
 
-            # Проверяем свежесть цены
             is_fresh = price_service.is_price_fresh(asset['symbol'])
             if not is_fresh and current_price != purchase_price:
                 stale_data = True
@@ -129,7 +127,6 @@ class PortfolioService:
         quantity = asset['quantity']
         purchase_price = asset['purchase_price']  # Пользовательская цена
 
-        # ВАЖНО: Всегда получаем свежую рыночную цену
         current_price = await price_service.get_price(asset['symbol'])
         if not current_price:
             current_price = asset['current_price'] or purchase_price

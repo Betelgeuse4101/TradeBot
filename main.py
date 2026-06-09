@@ -64,8 +64,6 @@ class TradeBot:
         # Запуск периодической очистки старых FSM состояний
         self._cleanup_task = asyncio.create_task(self._cleanup_old_fsm_states_periodically())
 
-        await self._safe_delete_webhook()
-
         # Запуск сервиса уведомлений
         self._alert_task = asyncio.create_task(self.alert_service.start())
         logger.info("✅ Сервис уведомлений запущен")
@@ -92,42 +90,13 @@ class TradeBot:
             try:
                 # Очищаем состояния старше 24 часов раз в 6 часов
                 await self.storage.cleanup_old_states(max_age_hours=24)
-                await asyncio.sleep(6 * 3600)  # 6 часов
+                await asyncio.sleep(6 * 3600)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Ошибка при очистке FSM состояний: {e}")
                 await asyncio.sleep(3600)  # При ошибке ждем час
 
-    async def _safe_delete_webhook(self):
-        """Безопасное удаление вебхука с повторными попытками"""
-        for attempt in range(self._max_retries):
-            try:
-                await asyncio.wait_for(
-                    self.bot.delete_webhook(drop_pending_updates=True),
-                    timeout=self._polling_timeout
-                )
-                logger.info("✅ Вебхук удален")
-                self._retry_count = 0
-                return
-            except asyncio.TimeoutError:
-                self._retry_count += 1
-                wait_time = min(2 ** self._retry_count, 30)
-                logger.warning(f"⚠️ Таймаут удаления вебхука (попытка {attempt + 1}/{self._max_retries})")
-            except TelegramNetworkError as e:
-                self._retry_count += 1
-                wait_time = min(2 ** self._retry_count, 30)
-                logger.warning(f"⚠️ Сетевая ошибка удаления вебхука (попытка {attempt + 1}/{self._max_retries}): {e}")
-            except Exception as e:
-                self._retry_count += 1
-                wait_time = min(2 ** self._retry_count, 30)
-                logger.warning(f"⚠️ Ошибка удаления вебхука (попытка {attempt + 1}/{self._max_retries}): {e}")
-
-            if attempt < self._max_retries - 1:
-                logger.info(f"⏳ Ожидание {wait_time} секунд перед повторной попыткой...")
-                await asyncio.sleep(wait_time)
-            else:
-                logger.error("❌ Не удалось удалить вебхук после всех попыток")
 
     async def _safe_polling(self):
         """Безопасный запуск поллинга с автоматическим восстановлением"""
@@ -263,7 +232,7 @@ async def main():
         except NotImplementedError:
             logger.warning("⚠️ Обработка сигналов не поддерживается на этой платформе")
     else:
-        logger.info("🪟 Windows: используем альтернативную обработку сигналов")
+        logger.info("Используем альтернативную обработку сигналов")
         try:
             signal.signal(signal.SIGINT, lambda s, f: asyncio.create_task(shutdown(bot)))
             signal.signal(signal.SIGTERM, lambda s, f: asyncio.create_task(shutdown(bot)))
@@ -284,7 +253,7 @@ async def main():
 
 
 async def shutdown(bot: TradeBot):
-    """Функция для graceful shutdown на Windows"""
+    """Завершение работы"""
     logger.info("🛑 Завершение работы...")
     await bot.stop()
 

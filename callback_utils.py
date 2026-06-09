@@ -65,7 +65,7 @@ def auto_delete_message(delay: int = 3):
 async def safe_callback_answer(callback: CallbackQuery, text: Optional[str] = None, show_alert: bool = False,
                                max_retries: int = Config.TELEGRAM_MAX_RETRIES) -> bool:
     """
-    Безопасный ответ на callback с обработкой устаревших запросов и сетевых ошибок
+    ответ на callback с обработкой устаревших запросов и сетевых ошибок
     """
     for attempt in range(max_retries):
         try:
@@ -101,7 +101,7 @@ async def safe_edit_message(
         **kwargs
 ) -> bool:
     """
-    Безопасное редактирование сообщения с обработкой ошибок и сетевых проблем
+    редактирование сообщения с обработкой ошибок и сетевых проблем
     """
     for attempt in range(max_retries):
         try:
@@ -138,7 +138,7 @@ async def safe_edit_message(
 
 async def safe_delete_message(message: Message, max_retries: int = Config.TELEGRAM_MAX_RETRIES) -> bool:
     """
-    Безопасное удаление сообщения
+    удаление сообщения
     """
     for attempt in range(max_retries):
         try:
@@ -175,7 +175,7 @@ async def safe_send_message(
         **kwargs
 ) -> Optional[Message]:
     """
-    Безопасная отправка нового сообщения
+    отправка нового сообщения
     """
     for attempt in range(max_retries):
         try:

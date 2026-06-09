@@ -27,7 +27,6 @@ class FSMStorage(BaseStorage):
         state_value = state.state if state is not None else None
 
         try:
-            # Получаем текущие данные, чтобы не потерять их
             current = await FSMStorageRepository.get_state(self._key_to_str(key))
             current_data = current.get('data') if current else None
 

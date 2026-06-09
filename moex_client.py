@@ -396,7 +396,7 @@ class MOEXClient:
             return None
 
     def _extract_price_from_row(self, row_dict: Dict) -> Optional[Decimal]:
-        """Извлечение цены из строки marketdata (общий метод)"""
+        """Извлечение цены из строки marketdata"""
 
         price_fields = [
             'LCURRENTPRICE',  # Текущая цена
@@ -467,13 +467,6 @@ class MOEXClient:
     async def get_prices(self, symbols: List[str], asset_types: Dict[str, str] = None) -> Dict[str, Decimal]:
         """
         Получение цен нескольких символов одновременно
-
-        Args:
-            symbols: Список символов
-            asset_types: Словарь с типами активов для каждого символа (опционально)
-
-        Returns:
-            Dict[str, Decimal]: Словарь {символ: цена}
         """
         logger.info(f"💰 ПОЛУЧЕНИЕ ЦЕН ДЛЯ {len(symbols)} СИМВОЛОВ")
 
